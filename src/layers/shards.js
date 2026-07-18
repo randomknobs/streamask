@@ -69,7 +69,7 @@ function beltOf(px, py){
   return 'halo';
 }
 
-const SIZE_RANGE = { core:[.20,.06], mid:[.40,.16], halo:[.75,.35] };
+const SIZE_RANGE = { core:[.20,.15], mid:[.40,.25], halo:[.75,.44] };
 
 // 3-6 «гнёзд» на лице — вокруг них кучкуется 70% элементов (гауссов разброс),
 // остальные 30% сыплются равномерно по общей области. Style влияет на форму
@@ -108,7 +108,7 @@ export function create(ctx){
   const style = pick(['shards','plates','rings','spikes','orbit','grid']);
   const symmetric = R() < .78;
   const asymmetryBias = R(.3, 0);
-  const n = RI(60, 22);
+  const n = RI(60, 38);
 
   const nests = makeNests(RI(7,3), style);
 

@@ -7,5 +7,5 @@ export function palette(){
   const offs = { analog:[0,.06,-.06,.12], complement:[0,.5,.04,.54],
                  triad:[0,.333,.666,.166], split:[0,.42,.58,.08], mono:[0,0,0,0] }[scheme];
   return offs.map((o,i)=> new THREE.Color().setHSL((h+o+1)%1,
-      scheme==='mono'? s*(1-i*.15) : s, scheme==='mono'? l*(1+i*.12) : l*R(1.15,.8)));
+      scheme==='mono'? Math.max(.5, s*(1-i*.15)) : s, scheme==='mono'? l*(1+i*.12) : l*R(1.15,.8)));
 }

@@ -76,7 +76,7 @@ export function create(ctx){
       material.uniforms.warp.value = R(3,0);
       material.uniforms.bands.value = R()<.45 ? 1 : 0;
       material.uniforms.spd.value = R(.8,.05);
-      genOp = R(.98,.78);
+      genOp = R(.98,.86);
       applyOpacity();
     },
 
