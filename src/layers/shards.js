@@ -14,24 +14,40 @@ const GEOMS = [
   ()=> new THREE.TorusKnotGeometry(1, R(.35,.08), 48, 6, RI(4,1), RI(4,2)),
 ];
 
+// категориальный тип материала решается на каждый слот при генерации
+// (см. pickKind), а не один раз на группу — иначе для style с фиксированной
+// геометрией (rings/spikes) разнообразие схлопывается до одного броска
+// на весь пояс. Непрерывные параметры (roughness/metalness/emissive) при
+// этом всё же общие на группу — это цена инстансинга.
+function pickKind(){
+  const k = R();
+  if(k < .22) return 'wire';
+  if(k < .34) return 'glass';
+  return 'solid';
+}
+
 // белый базовый цвет — реальный цвет каждого инстанса задаёт instanceColor,
 // иначе умножение material.color × instanceColor даёт грязные тона
-function makeGroupMaterial(belt, cols){
-  if (belt === 'halo'){
-    return new THREE.MeshStandardMaterial({
-      color:0xffffff, transparent:true, opacity:R(.5,.18), side:THREE.DoubleSide,
-      roughness:R(.95,.3), metalness:R(.6,0), flatShading:R()<.6,
-      emissive:R()<.3 ? pick(cols) : 0x000000, emissiveIntensity:R(.6,.1)
+function makeGroupMaterial(kind, belt, cols){
+  const halo = belt === 'halo';
+  if(kind === 'wire'){
+    return new THREE.MeshBasicMaterial({
+      color:0xffffff, wireframe:true,
+      transparent:halo, opacity:halo ? R(.55,.2) : 1, depthWrite:!halo
     });
   }
-  const kind = R();
-  if(kind < .22) return new THREE.MeshBasicMaterial({color:0xffffff, wireframe:true});
-  if(kind < .34) return new THREE.MeshBasicMaterial({color:0xffffff, transparent:true, opacity:R(.65,.25),
-                                                     side:THREE.DoubleSide});
+  if(kind === 'glass'){
+    return new THREE.MeshBasicMaterial({
+      color:0xffffff, transparent:true, side:THREE.DoubleSide, depthWrite:false,
+      opacity: halo ? R(.4,.12) : R(.65,.25)
+    });
+  }
   return new THREE.MeshStandardMaterial({
     color:0xffffff, side:THREE.DoubleSide, flatShading:R()<.6,
-    roughness:R(.95,.1), metalness:R(1,0),
-    emissive:R()<.35 ? pick(cols) : 0x000000, emissiveIntensity:R(.8,.1)
+    transparent:halo, depthWrite:!halo, opacity: halo ? R(.55,.2) : 1,
+    roughness:R(.95, halo?.3:.1), metalness:R(halo?.6:1,0),
+    emissive:R()<(halo?.3:.35) ? pick(cols) : 0x000000,
+    emissiveIntensity:R(halo?.6:.8,.1)
   });
 }
 
@@ -69,7 +85,7 @@ function gaussian(sigma){
 
 // объёмные элементы вокруг лица — пересоздаются целиком на каждый generate().
 // Много мелких элементов не тянут по FPS через отдельные Mesh — инстансим
-// InstancedMesh на каждую (geometry × пояс плотности) комбинацию.
+// InstancedMesh на каждую комбинацию (geometry × пояс плотности × тип материала).
 export function create(ctx){
   const { palette: cols } = ctx;
 
@@ -104,13 +120,14 @@ export function create(ctx){
     const ph = R(6.28);
     const scale = { x:s, y:s*R(1.6,.5), z:s*R(1.4,.4) };
     const color = pick(cols);
-    const key = geomIdx + '|' + belt;
+    const kind = pickKind();
+    const key = geomIdx + '|' + belt + '|' + kind;
 
-    slots.push({ key, geomIdx, belt, px, py, pz, rot, spin, pulse, ph, scale, color });
+    slots.push({ key, geomIdx, belt, kind, px, py, pz, rot, spin, pulse, ph, scale, color });
 
     if (symmetric && Math.abs(px) > .08 && R() >= asymmetryBias){
       slots.push({
-        key, geomIdx, belt, px:-px, py, pz,
+        key, geomIdx, belt, kind, px:-px, py, pz,
         rot:{ x:rot.x, y:-rot.y, z:-rot.z },
         spin: spin.clone().multiply(new THREE.Vector3(1,-1,-1)),
         pulse, ph, scale:{ ...scale }, color
@@ -129,9 +146,9 @@ export function create(ctx){
   const m = new THREE.Matrix4(), q = new THREE.Quaternion();
 
   for (const items of groups.values()){
-    const { geomIdx, belt } = items[0];
+    const { geomIdx, belt, kind } = items[0];
     const geometry = GEOMS[geomIdx]();
-    const material = makeGroupMaterial(belt, cols);
+    const material = makeGroupMaterial(kind, belt, cols);
     const imesh = new THREE.InstancedMesh(geometry, material, items.length);
     imesh.frustumCulled = false;
 
