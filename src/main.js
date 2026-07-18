@@ -4,6 +4,7 @@ import { palette } from './palette.js';
 import { loadLandmarker, createFaceTracker, createBlendshapeSmoother } from './tracking.js';
 import * as skinLayer from './layers/skin.js';
 import * as shardsLayer from './layers/shards.js';
+import * as mouthLayer from './layers/mouth.js';
 import { setupUI } from './ui.js';
 
 const $ = id => document.getElementById(id);
@@ -30,6 +31,7 @@ const blend = createBlendshapeSmoother();
 /* ────────────────────────── генератор маски ───────────────────── */
 let skin = null;
 let shards = null;
+let mouth = null;
 let currentSeed = '';
 
 function generate(seedStr){
@@ -46,6 +48,7 @@ function generate(seedStr){
   anchor.add(shards.object3D);
 
   skin.applyPalette(cols);
+  mouth.applyPalette(cols);
 }
 
 /* ────────────────────────── mediapipe ─────────────────────────── */
@@ -55,6 +58,7 @@ async function initMP(){
   landmarker = await loadLandmarker();
   skin = skinLayer.create({ scene, palette: [], params: {} });
   skin.setOpacityMultiplier(skinOpacity);
+  mouth = mouthLayer.create({ scene, palette: [], params: {} });
 }
 
 let currentStream = null;
@@ -108,7 +112,7 @@ let userScale = 1, smoothing = .6, showSkin = true, showShards = true, skinOpaci
 
 /* ────────────────────────── loop ──────────────────────────────── */
 let lastTs = -1, t0 = performance.now(), frames = 0, fps = 0, fpsT = performance.now();
-let mouthEnergy = 0;
+let mouthEnergy = 0, jawOpen = 0;
 function loop(){
   requestAnimationFrame(loop);
   if(!landmarker || video.readyState < 2) return;
@@ -121,19 +125,24 @@ function loop(){
       const lms = res.faceLandmarks[0];
       tracker.updateAnchor(lms, aspect, anchor, smoothing, userScale);
       if(showSkin) skin.updateGeometry(lms, aspect);
+      if(mouth) mouth.updateGeometry(lms, aspect);
       anchor.visible = showShards;
       if(skin) skin.object3D.visible = showSkin;
+      if(mouth) mouth.object3D.visible = showSkin;
 
       const bs = blend.update(res.faceBlendshapes?.[0]?.categories);
-      mouthEnergy = (bs.jawOpen||0)*.7 + (bs.mouthFunnel||0)*.2 + (bs.mouthPucker||0)*.1;
+      jawOpen = bs.jawOpen || 0;
+      mouthEnergy = jawOpen*.7 + (bs.mouthFunnel||0)*.2 + (bs.mouthPucker||0)*.1;
     } else {
       anchor.visible = false;
       if(skin) skin.object3D.visible = false;
+      if(mouth) mouth.object3D.visible = false;
     }
   }
 
   const t = (now - t0)/1000;
   skin.setTime(t);
+  if(mouth) mouth.setFrame(t, jawOpen);
   if(shards) shards.update({ t, mouthEnergy });
 
   renderer.render(scene, camera);
