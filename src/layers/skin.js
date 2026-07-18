@@ -60,7 +60,7 @@ export function create(ctx){
   function applyOpacity(){
     const finalOp = genOp * opacityMultiplier;
     material.uniforms.op.value = finalOp;
-    const opaque = finalOp >= .98;
+    const opaque = finalOp >= .95;
     material.transparent = !opaque;
     material.depthWrite = opaque;
   }
