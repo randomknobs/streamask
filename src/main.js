@@ -6,6 +6,7 @@ import * as skinLayer from './layers/skin.js';
 import * as shardsLayer from './layers/shards.js';
 import * as mouthLayer from './layers/mouth.js';
 import * as eyesLayer from './layers/eyes.js';
+import * as browsLayer from './layers/brows.js';
 import { setupUI } from './ui.js';
 
 const $ = id => document.getElementById(id);
@@ -34,11 +35,13 @@ let skin = null;
 let shards = null;
 let mouth = null;
 let eyes = null;
+let brows = null;
 let currentSeed = '';
 
 function generate(seedStr){
   if(shards){ anchor.remove(shards.object3D); shards.dispose(); }
   if(eyes){ anchor.remove(eyes.object3D); eyes.dispose(); }
+  if(brows){ anchor.remove(brows.object3D); brows.dispose(); }
 
   currentSeed = seedStr || Math.random().toString(36).slice(2,9);
   const seedNum = seedFrom(currentSeed);
@@ -53,6 +56,10 @@ function generate(seedStr){
 
   eyes = eyesLayer.create({ palette: cols, params: {}, seedNum });
   anchor.add(eyes.object3D);
+
+  brows = browsLayer.create({ palette: cols, params: {} });
+  anchor.add(brows.object3D);
+  $('browPreset').textContent = 'брови: ' + brows.presetName;
 
   skin.applyPalette(cols);
   mouth.applyPalette(cols);
@@ -145,6 +152,7 @@ function loop(){
       jawOpen = bs.jawOpen || 0;
       mouthEnergy = jawOpen*.7 + (bs.mouthFunnel||0)*.2 + (bs.mouthPucker||0)*.1;
       if(eyes) eyes.updateGeometry(lms, aspect, anchor, bs.eyeBlinkRight||0, bs.eyeBlinkLeft||0, jawOpen);
+      if(brows) brows.update(bs.browDownLeft||0, bs.browDownRight||0);
     } else {
       anchor.visible = false;
       if(skin) skin.object3D.visible = false;
