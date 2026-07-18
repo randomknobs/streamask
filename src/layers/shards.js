@@ -19,35 +19,46 @@ const GEOMS = [
 // геометрией (rings/spikes) разнообразие схлопывается до одного броска
 // на весь пояс. Непрерывные параметры (roughness/metalness/emissive) при
 // этом всё же общие на группу — это цена инстансинга.
+// ~60% непрозрачных, ~20% полупрозрачных, ~20% wireframe.
 function pickKind(){
   const k = R();
-  if(k < .22) return 'wire';
-  if(k < .34) return 'glass';
+  if(k < .2) return 'wire';
+  if(k < .4) return 'glass';
   return 'solid';
 }
 
+// setColorAt пишет instanceColor в linear-space, а pick(cols) отдаёт цвет
+// из HSL-палитры как есть (де-факто sRGB) — без конвертации встроенные
+// материалы гамма-кодируют его дважды на выходе, картинка выцветает.
+// Кастомный шейдер кожи в этот пайплайн не попадает, поэтому там всё ок
+// без конвертации.
+const toLinear = c => c.clone().convertSRGBToLinear();
+
 // белый базовый цвет — реальный цвет каждого инстанса задаёт instanceColor,
-// иначе умножение material.color × instanceColor даёт грязные тона
+// иначе умножение material.color × instanceColor даёт грязные тона.
+// Прозрачность — привилегия пояса halo, у core/mid все три вида материала
+// непрозрачны (различается только сам стиль заливки: wireframe / плоский
+// цвет / освещённый PBR).
 function makeGroupMaterial(kind, belt, cols){
   const halo = belt === 'halo';
   if(kind === 'wire'){
     return new THREE.MeshBasicMaterial({
       color:0xffffff, wireframe:true,
-      transparent:halo, opacity:halo ? R(.55,.2) : 1, depthWrite:!halo
+      transparent:halo, opacity:halo ? R(.55,.25) : 1, depthWrite:!halo
     });
   }
   if(kind === 'glass'){
     return new THREE.MeshBasicMaterial({
-      color:0xffffff, transparent:true, side:THREE.DoubleSide, depthWrite:false,
-      opacity: halo ? R(.4,.12) : R(.65,.25)
+      color:0xffffff, side:THREE.DoubleSide,
+      transparent:halo, opacity: halo ? R(.45,.18) : 1, depthWrite:!halo
     });
   }
   return new THREE.MeshStandardMaterial({
     color:0xffffff, side:THREE.DoubleSide, flatShading:R()<.6,
-    transparent:halo, depthWrite:!halo, opacity: halo ? R(.55,.2) : 1,
-    roughness:R(.95, halo?.3:.1), metalness:R(halo?.6:1,0),
-    emissive:R()<(halo?.3:.35) ? pick(cols) : 0x000000,
-    emissiveIntensity:R(halo?.6:.8,.1)
+    transparent:halo, depthWrite:!halo, opacity: halo ? R(.55,.22) : 1,
+    roughness:R(.95, halo?.3:.15), metalness:R(halo?.5:.7,0),
+    emissive:R()<.3 ? toLinear(pick(cols)) : 0x000000,
+    emissiveIntensity:R(halo?.6:.7,.1)
   });
 }
 
@@ -63,16 +74,21 @@ const SIZE_RANGE = { core:[.20,.06], mid:[.40,.16], halo:[.75,.35] };
 // 3-6 «гнёзд» на лице — вокруг них кучкуется 70% элементов (гауссов разброс),
 // остальные 30% сыплются равномерно по общей области. Style влияет на форму
 // расстановки гнёзд, но не на итоговый пул позиций.
+// Радиус гнезда — линейно от 0, БЕЗ sqrt-коррекции на площадь: так плотность
+// точек естественно выше у центра (ядро лица) и ниже к краю — то, что нужно
+// для пояса core. Верхняя граница (~0.7) держит гнёзда внутри овала лица,
+// а не в районе ушей.
 function makeNests(count, style){
   const nests = [];
   for (let i=0;i<count;i++){
     if (style === 'orbit'){
-      const a = R(Math.PI*2), rr = R(.9,.4);
-      nests.push({ x:Math.cos(a)*rr, y:Math.sin(a)*rr*.9 });
+      const a = R(Math.PI*2), rr = R(.65,.15);
+      nests.push({ x:Math.cos(a)*rr, y:Math.sin(a)*rr*.85 });
     } else if (style === 'grid'){
-      nests.push({ x:(RI(4)-1.5)*.4, y:(RI(5)-2)*.35 });
+      nests.push({ x:(RI(3)-1)*.3, y:(RI(3)-1)*.28 });
     } else {
-      nests.push({ x:R(1.1,.05)*(R()<.5?-1:1), y:R(.9,-.9) });
+      const a = R(Math.PI*2), rr = R(.7,0);
+      nests.push({ x:Math.cos(a)*rr, y:Math.sin(a)*rr*.85 });
     }
   }
   return nests;
@@ -119,7 +135,7 @@ export function create(ctx){
     const pulse = R()<.35 ? R(3,.5) : 0;
     const ph = R(6.28);
     const scale = { x:s, y:s*R(1.6,.5), z:s*R(1.4,.4) };
-    const color = pick(cols);
+    const color = toLinear(pick(cols));
     const kind = pickKind();
     const key = geomIdx + '|' + belt + '|' + kind;
 
