@@ -17,16 +17,15 @@ function signedArea2D(pts){
   return sum/2;
 }
 
-// объёмные объекты (skin, shards) рисуются раньше и при высокой генерируемой
-// непрозрачности кожи (см. skin.js) переходят в opaque+depthWrite:true —
-// без depthTest:false шум рта был бы депт-занулен этой плоскостью и не
-// виден вообще на части масок. Эффект должен работать всегда, не зависеть
-// от того, куда упал слайдер непрозрачности кожи.
+// Сидит чуть ПЕРЕД плоскостью кожи (z +.004, см. updateGeometry) — так виден
+// независимо от непрозрачности кожи (см. skin.js), но depthTest остаётся
+// включённым, и осколки, которые физически ближе к камере, честно
+// перекрывают шум, как и всё остальное.
 export function create(ctx){
   const { scene } = ctx;
 
   const material = new THREE.ShaderMaterial({
-    transparent:true, depthWrite:false, depthTest:false, side:THREE.DoubleSide,
+    transparent:true, depthWrite:false, side:THREE.DoubleSide,
     uniforms:{ t:{value:0}, intensity:{value:0},
                tint:{value:new THREE.Color(1,1,1)}, rollSpeed:{value:.6} },
     vertexShader:`varying vec2 vUv;
@@ -58,7 +57,6 @@ export function create(ctx){
 
   const mesh = new THREE.Mesh(geometry, material);
   mesh.frustumCulled = false;
-  mesh.renderOrder = 10;
   scene.add(mesh);
 
   let ring = RING_RAW;
@@ -104,12 +102,12 @@ export function create(ctx){
       let cx=0, cy=0, cz=0;
       for (let i=0;i<N;i++){
         const p = pts[i];
-        pos[i*3]=p.x; pos[i*3+1]=p.y; pos[i*3+2]=p.z-.004;
+        pos[i*3]=p.x; pos[i*3+1]=p.y; pos[i*3+2]=p.z+.004;
         uv[i*2]=(p.x-minX)/spanX; uv[i*2+1]=(p.y-minY)/spanY;
         cx+=p.x; cy+=p.y; cz+=p.z;
       }
       cx/=N; cy/=N; cz/=N;
-      pos[centroidIdx*3]=cx; pos[centroidIdx*3+1]=cy; pos[centroidIdx*3+2]=cz-.004;
+      pos[centroidIdx*3]=cx; pos[centroidIdx*3+1]=cy; pos[centroidIdx*3+2]=cz+.004;
       uv[centroidIdx*2]=.5; uv[centroidIdx*2+1]=.5;
 
       geometry.attributes.position.needsUpdate = true;
