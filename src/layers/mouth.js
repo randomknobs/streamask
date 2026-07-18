@@ -26,21 +26,27 @@ export function create(ctx){
 
   const material = new THREE.ShaderMaterial({
     transparent:true, depthWrite:false, side:THREE.DoubleSide,
-    uniforms:{ t:{value:0}, intensity:{value:0},
+    uniforms:{ t:{value:0}, jawOpen:{value:0},
                tint:{value:new THREE.Color(1,1,1)}, rollSpeed:{value:.6} },
     vertexShader:`varying vec2 vUv;
       void main(){ vUv=uv; gl_Position=projectionMatrix*modelViewMatrix*vec4(position,1.); }`,
     fragmentShader:`precision highp float;
-      uniform float t, intensity, rollSpeed; uniform vec3 tint;
+      uniform float t, jawOpen, rollSpeed; uniform vec3 tint;
       varying vec2 vUv;
       float hash(vec2 p){ return fract(sin(dot(p, vec2(41.3,289.1)))*43758.5453); }
       void main(){
-        float n = hash(vec2(floor(vUv.x*220.), floor(vUv.y*160.) + floor(t*24.)));
+        float frame = floor(t*24.);
+        float raw = hash(vec2(floor(vUv.x*220.), floor(vUv.y*160.) + frame));
+        float n = smoothstep(0.35, 0.75, raw);
         float scan = 0.85 + 0.15*sin(vUv.y*400. + t*6.);
         float roll = smoothstep(0.0, 0.08, fract(vUv.y - t*rollSpeed));
         vec3 c = vec3(n)*scan*mix(0.6,1.0,roll);
-        c = mix(c, c*tint, 0.5);
-        gl_FragColor = vec4(c, intensity);
+        c = mix(c, c*tint, 0.25);
+        c = min(c*1.4, vec3(1.0));
+        float flash = hash(vec2(frame, 7.0));
+        if (flash > 0.97) c = vec3(1.0);
+        float alpha = smoothstep(0.06, 0.35, jawOpen);
+        gl_FragColor = vec4(c, alpha);
       }`
   });
 
@@ -116,7 +122,7 @@ export function create(ctx){
 
     setFrame(t, jawOpen){
       material.uniforms.t.value = t;
-      material.uniforms.intensity.value = jawOpen;
+      material.uniforms.jawOpen.value = jawOpen;
     },
 
     dispose(){ geometry.dispose(); material.dispose(); scene.remove(mesh); }
