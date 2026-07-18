@@ -53,6 +53,7 @@ async function initMP(){
   statusEl.textContent = 'загрузка модели…';
   landmarker = await loadLandmarker();
   skin = skinLayer.create({ scene, palette: [], params: {} });
+  skin.setOpacityMultiplier(skinOpacity);
 }
 
 let currentStream = null;
@@ -102,7 +103,7 @@ function resize(){
 addEventListener('resize', resize);
 
 /* ────────────────────────── состояние панели ──────────────────── */
-let userScale = 1, smoothing = .6, showSkin = true, showShards = true;
+let userScale = 1, smoothing = .6, showSkin = true, showShards = true, skinOpacity = 1;
 
 /* ────────────────────────── loop ──────────────────────────────── */
 let lastTs = -1, t0 = performance.now(), frames = 0, fps = 0, fpsT = performance.now();
@@ -145,6 +146,7 @@ setupUI({
   onToggleShards: () => { showShards = !showShards; return showShards; },
   onSmoothing: v => smoothing = v,
   onScale: v => userScale = v,
+  onSkinOpacity: v => { skinOpacity = v; if(skin) skin.setOpacityMultiplier(v); },
   onChroma: on => { video.style.display = on ? 'none' : 'block'; },
 });
 

@@ -53,6 +53,18 @@ export function create(ctx){
 
   const v = new THREE.Vector3();
 
+  // op = genOp (из сида) × opacityMultiplier (ручной слайдер, в сид не пишется).
+  // На полной непрозрачности честно перекрываем всё за собой — без этого
+  // depthWrite:false даёт просвечивание даже при op=1.
+  let genOp = .9, opacityMultiplier = 1;
+  function applyOpacity(){
+    const finalOp = genOp * opacityMultiplier;
+    material.uniforms.op.value = finalOp;
+    const opaque = finalOp >= .98;
+    material.transparent = !opaque;
+    material.depthWrite = opaque;
+  }
+
   return {
     object3D: mesh,
 
@@ -64,8 +76,11 @@ export function create(ctx){
       material.uniforms.warp.value = R(3,0);
       material.uniforms.bands.value = R()<.45 ? 1 : 0;
       material.uniforms.spd.value = R(.8,.05);
-      material.uniforms.op.value = R(.95,.55);
+      genOp = R(.98,.78);
+      applyOpacity();
     },
+
+    setOpacityMultiplier(mult){ opacityMultiplier = mult; applyOpacity(); },
 
     updateGeometry(landmarks, aspect){
       const pos = geometry.attributes.position.array;
