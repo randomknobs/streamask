@@ -137,16 +137,20 @@ export function create(ctx){
     const scale = { x:s, y:s*R(1.6,.5), z:s*R(1.4,.4) };
     const color = toLinear(pick(cols));
     const kind = pickKind();
+    // реакция на рот: mouthK 0..0.8 (часть элементов не реагирует вовсе),
+    // mouthInvert — эта часть сжимается вместо роста при открытии рта.
+    const mouthK = R()<.35 ? 0 : R(.8,0);
+    const mouthInvert = R()<.25;
     const key = geomIdx + '|' + belt + '|' + kind;
 
-    slots.push({ key, geomIdx, belt, kind, px, py, pz, rot, spin, pulse, ph, scale, color });
+    slots.push({ key, geomIdx, belt, kind, px, py, pz, rot, spin, pulse, ph, scale, color, mouthK, mouthInvert });
 
     if (symmetric && Math.abs(px) > .08 && R() >= asymmetryBias){
       slots.push({
         key, geomIdx, belt, kind, px:-px, py, pz,
         rot:{ x:rot.x, y:-rot.y, z:-rot.z },
         spin: spin.clone().multiply(new THREE.Vector3(1,-1,-1)),
-        pulse, ph, scale:{ ...scale }, color
+        pulse, ph, scale:{ ...scale }, color, mouthK, mouthInvert
       });
     }
   }
@@ -174,12 +178,16 @@ export function create(ctx){
       imesh.setMatrixAt(idx, m);
       imesh.setColorAt(idx, it.color);
 
+      const r0 = Math.hypot(it.px, it.py) || 1e-6;
+
       anim.push({
-        imesh, index:idx,
+        imesh, index:idx, belt:it.belt,
         pos:new THREE.Vector3(it.px,it.py,it.pz),
+        dirX: it.px / r0, dirY: it.py / r0,
         euler:new THREE.Euler(it.rot.x, it.rot.y, it.rot.z),
         spin:it.spin, pulse:it.pulse, ph:it.ph,
-        baseScale:new THREE.Vector3(it.scale.x,it.scale.y,it.scale.z)
+        baseScale:new THREE.Vector3(it.scale.x,it.scale.y,it.scale.z),
+        mouthK:it.mouthK, mouthInvert:it.mouthInvert
       });
     });
     imesh.instanceMatrix.needsUpdate = true;
@@ -189,25 +197,40 @@ export function create(ctx){
   }
 
   const scaleV = new THREE.Vector3();
+  const posV = new THREE.Vector3();
 
   return {
     object3D: group,
 
     update(state){
       const t = state.t;
+      const mouthEnergy = state.mouthEnergy || 0;
+      const spinMul = 1 + mouthEnergy*2;
       const touched = new Set();
       for (const a of anim){
-        a.euler.x += a.spin.x*.01;
-        a.euler.y += a.spin.y*.01;
-        a.euler.z += a.spin.z*.01;
+        a.euler.x += a.spin.x*.01*spinMul;
+        a.euler.y += a.spin.y*.01*spinMul;
+        a.euler.z += a.spin.z*.01*spinMul;
         q.setFromEuler(a.euler);
+
+        let sx = a.baseScale.x, sy = a.baseScale.y, sz = a.baseScale.z;
+        if (a.mouthK){
+          const mk = 1 + mouthEnergy * a.mouthK * (a.mouthInvert ? -1 : 1);
+          sx *= mk; sy *= mk; sz *= mk;
+        }
         if (a.pulse){
           const k = 1 + Math.sin(t*a.pulse + a.ph)*.18;
-          scaleV.set(a.baseScale.x*k, a.baseScale.y*k, a.baseScale.z*k);
-        } else {
-          scaleV.copy(a.baseScale);
+          sx *= k; sy *= k; sz *= k;
         }
-        m.compose(a.pos, q, scaleV);
+        scaleV.set(sx, sy, sz);
+
+        posV.copy(a.pos);
+        if (a.belt === 'core' && mouthEnergy){
+          posV.x += a.dirX * mouthEnergy * .15;
+          posV.y += a.dirY * mouthEnergy * .15;
+        }
+
+        m.compose(posV, q, scaleV);
         a.imesh.setMatrixAt(a.index, m);
         touched.add(a.imesh);
       }

@@ -1,7 +1,7 @@
 import * as THREE from 'three';
 import { reseed, seedFrom } from './rng.js';
 import { palette } from './palette.js';
-import { loadLandmarker, createFaceTracker } from './tracking.js';
+import { loadLandmarker, createFaceTracker, createBlendshapeSmoother } from './tracking.js';
 import * as skinLayer from './layers/skin.js';
 import * as shardsLayer from './layers/shards.js';
 import { setupUI } from './ui.js';
@@ -25,6 +25,7 @@ anchor.matrixAutoUpdate = false;
 scene.add(anchor);
 
 const tracker = createFaceTracker();
+const blend = createBlendshapeSmoother();
 
 /* ────────────────────────── генератор маски ───────────────────── */
 let skin = null;
@@ -107,6 +108,7 @@ let userScale = 1, smoothing = .6, showSkin = true, showShards = true, skinOpaci
 
 /* ────────────────────────── loop ──────────────────────────────── */
 let lastTs = -1, t0 = performance.now(), frames = 0, fps = 0, fpsT = performance.now();
+let mouthEnergy = 0;
 function loop(){
   requestAnimationFrame(loop);
   if(!landmarker || video.readyState < 2) return;
@@ -121,6 +123,9 @@ function loop(){
       if(showSkin) skin.updateGeometry(lms, aspect);
       anchor.visible = showShards;
       if(skin) skin.object3D.visible = showSkin;
+
+      const bs = blend.update(res.faceBlendshapes?.[0]?.categories);
+      mouthEnergy = (bs.jawOpen||0)*.7 + (bs.mouthFunnel||0)*.2 + (bs.mouthPucker||0)*.1;
     } else {
       anchor.visible = false;
       if(skin) skin.object3D.visible = false;
@@ -129,7 +134,7 @@ function loop(){
 
   const t = (now - t0)/1000;
   skin.setTime(t);
-  if(shards) shards.update({ t });
+  if(shards) shards.update({ t, mouthEnergy });
 
   renderer.render(scene, camera);
 

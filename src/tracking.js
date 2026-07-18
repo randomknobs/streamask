@@ -9,7 +9,7 @@ export async function loadLandmarker(){
     baseOptions:{ modelAssetPath:
       'https://storage.googleapis.com/mediapipe-models/face_landmarker/face_landmarker/float16/1/face_landmarker.task',
       delegate:'GPU' },
-    runningMode:'VIDEO', numFaces:1, outputFaceBlendshapes:false
+    runningMode:'VIDEO', numFaces:1, outputFaceBlendshapes:true
   });
 }
 
@@ -56,6 +56,23 @@ export function createFaceTracker(){
       const s = curScale * userScale;
       anchor.matrix.compose(curPos, curQuat, new THREE.Vector3(s,s,s));
       anchor.matrixWorldNeedsUpdate = true;
+    }
+  };
+}
+
+// экспоненциальное сглаживание блендшейпов по имени категории — иначе дрожит.
+// Возвращает один и тот же объект каждый кадр (мутируется на месте).
+export function createBlendshapeSmoother(){
+  const smoothed = {};
+  return {
+    update(categories){
+      if (categories){
+        for (const cat of categories){
+          const prev = smoothed[cat.categoryName] ?? cat.score;
+          smoothed[cat.categoryName] = prev + (cat.score - prev) * .35;
+        }
+      }
+      return smoothed;
     }
   };
 }
