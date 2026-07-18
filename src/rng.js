@@ -24,3 +24,14 @@ export function reseed(seedNum){ rnd = mulberry32(seedNum); }
 export function R(a = 1, b = 0){ return b + rnd() * (a - b); }
 export function RI(a, b = 0){ return Math.floor(R(a, b)); }
 export function pick(arr){ return arr[RI(arr.length)]; }
+
+// независимый поток, не трогает общий rnd — нужен там, где несколько
+// параллельных сущностей (например левый/правый глаз) должны генерироваться
+// с разными сидами, не влияя на порядок потребления общего потока.
+export function createRng(seedNum){
+  let local = mulberry32(seedNum);
+  const R = (a = 1, b = 0) => b + local() * (a - b);
+  const RI = (a, b = 0) => Math.floor(R(a, b));
+  const pick = arr => arr[RI(arr.length)];
+  return { R, RI, pick };
+}

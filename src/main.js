@@ -5,6 +5,7 @@ import { loadLandmarker, createFaceTracker, createBlendshapeSmoother } from './t
 import * as skinLayer from './layers/skin.js';
 import * as shardsLayer from './layers/shards.js';
 import * as mouthLayer from './layers/mouth.js';
+import * as eyesLayer from './layers/eyes.js';
 import { setupUI } from './ui.js';
 
 const $ = id => document.getElementById(id);
@@ -32,13 +33,16 @@ const blend = createBlendshapeSmoother();
 let skin = null;
 let shards = null;
 let mouth = null;
+let eyes = null;
 let currentSeed = '';
 
 function generate(seedStr){
   if(shards){ anchor.remove(shards.object3D); shards.dispose(); }
+  if(eyes){ anchor.remove(eyes.object3D); eyes.dispose(); }
 
   currentSeed = seedStr || Math.random().toString(36).slice(2,9);
-  reseed(seedFrom(currentSeed));
+  const seedNum = seedFrom(currentSeed);
+  reseed(seedNum);
   $('seed').textContent = currentSeed;
   location.hash = currentSeed;
 
@@ -46,6 +50,9 @@ function generate(seedStr){
 
   shards = shardsLayer.create({ scene, palette: cols, params: {} });
   anchor.add(shards.object3D);
+
+  eyes = eyesLayer.create({ palette: cols, params: {}, seedNum });
+  anchor.add(eyes.object3D);
 
   skin.applyPalette(cols);
   mouth.applyPalette(cols);
@@ -124,6 +131,10 @@ function loop(){
     if(res.faceLandmarks && res.faceLandmarks.length){
       const lms = res.faceLandmarks[0];
       tracker.updateAnchor(lms, aspect, anchor, smoothing, userScale);
+      // eyes.js пересчитывает позиции в anchor-local через matrixWorld этим
+      // же кадром — без принудительного пересчёта тут читал бы матрицу
+      // с прошлого кадра (three обновляет её лениво, внутри renderer.render).
+      anchor.updateMatrixWorld(true);
       if(showSkin) skin.updateGeometry(lms, aspect);
       if(mouth) mouth.updateGeometry(lms, aspect);
       anchor.visible = showShards;
@@ -133,6 +144,7 @@ function loop(){
       const bs = blend.update(res.faceBlendshapes?.[0]?.categories);
       jawOpen = bs.jawOpen || 0;
       mouthEnergy = jawOpen*.7 + (bs.mouthFunnel||0)*.2 + (bs.mouthPucker||0)*.1;
+      if(eyes) eyes.updateGeometry(lms, aspect, anchor, bs.eyeBlinkRight||0, bs.eyeBlinkLeft||0, jawOpen);
     } else {
       anchor.visible = false;
       if(skin) skin.object3D.visible = false;
