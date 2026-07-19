@@ -1,5 +1,6 @@
 import * as THREE from 'three';
 import { R, RI, pick } from '../rng.js';
+import { GLSL_SOURCE, pickPattern, pickContrastingPair } from '../texture/patterns.js';
 
 // Крепление — приближённая позиция над лендмарком 10 (лоб) в anchor-local
 // координатах (начало координат анкера — кончик носа, см. tracking.js).
@@ -161,24 +162,157 @@ function addPlume(radius, cols, group){
 const FAMILIES = { dome:addDome, crest:addCrest, halo:addHalo, rays:addRays,
                     tiers:addTiers, horns:addHorns, wrap:addWrap, plume:addPlume };
 
-// Обязательная база под ВСЕ семейства — низкая шапочка, плотно облегающая
-// голову, семейство ставится поверх неё. Без неё горны/гало/плюм/гребень/
-// лучи не держат силуэт и волосы остаются открыты по бокам.
-// Всегда solid (никогда glass/wire) — она должна реально перекрывать.
-// Радиус фиксирован (не как у семейства — та часть декоративная и растёт
-// до 1.8, эта всегда плотно прилегает).
-function addBaseCap(color, group){
-  const capRadius = R(1.2,1.1);
-  const thetaLen = Math.PI*.62; // за экватор — иначе не закроет затылок при наклоне вперёд
-  const geo = new THREE.SphereGeometry(capRadius, 24, 16, 0, Math.PI*2, 0, thetaLen);
-  // опускаем ниже уровня крепления (лоб), чтобы дойти до бровей спереди
-  // и ниже линии ушей по бокам — независимо от thetaLen, край ровно на -DROP.
+/* ────────────────────────── шапочка (фаза 8b) ──────────────────────────
+   Обязательная база под ВСЕ семейства — плотно облегающая голову форма,
+   семейство ставится поверх неё. Без неё горны/гало/плюм/гребень/лучи не
+   держат силуэт и волосы остаются открыты по бокам. Форма шапочки — своё,
+   независимое от силуэтного семейства, семейство из сида.
+   Всегда непрозрачная (текстура двухцветная, но alpha=1 всегда) — она
+   должна реально перекрывать, а не просвечивать. */
+const CAP_FAMILIES = ['dome','low','deep','cone','box','bulb','flat','segments'];
+// low/flat физически перекрывают меньше всего — там бахрома обязательна
+// (см. create(), fringeChance), а не просто желательна.
+export const CAP_SPARSE = new Set(['low','flat']);
+// на гранёных/раздельных формах мелкий паттерн превращается в кашу —
+// см. "Соответствие" в спеке.
+const CAP_LARGE_SCALE_ONLY = new Set(['box','segments']);
+
+function capSphereCap(radius, thetaLen, drop){
+  const geo = new THREE.SphereGeometry(radius, 24, 16, 0, Math.PI*2, 0, thetaLen);
+  const rimY = radius*Math.cos(thetaLen);
+  geo.translate(0, -rimY-drop, 0);
+  return geo;
+}
+
+function buildCapDome(radius){ return capSphereCap(radius, Math.PI*.62, .5); }
+function buildCapLow(radius){ return capSphereCap(radius, Math.PI*.42, .1); }
+function buildCapDeep(radius){ return capSphereCap(radius, Math.PI*.72, 1.0); }
+
+function buildCapCone(radius, height){
   const DROP = .5;
-  const rimY = capRadius*Math.cos(thetaLen);
-  geo.translate(0, -rimY-DROP, 0);
-  const mat = makeMaterial('solid', color);
-  mat.flatShading = false;
-  group.add(new THREE.Mesh(geo, mat));
+  const geo = new THREE.CylinderGeometry(radius*.12, radius, height, 20);
+  geo.translate(0, height/2-DROP, 0); // широкое основание (низ) на y=-DROP
+  return geo;
+}
+
+// низкополигональная сфера — сама угловатость сегментов и есть "грань"
+function buildCapBox(radius){
+  const facets = RI(9,5); // 5-8, как в спеке
+  const thetaLen = Math.PI*.58;
+  const geo = new THREE.SphereGeometry(radius, facets, Math.max(3,Math.round(facets*.6)), 0, Math.PI*2, 0, thetaLen);
+  const rimY = radius*Math.cos(thetaLen);
+  geo.translate(0, -rimY-.5, 0);
+  return geo;
+}
+
+// луковица — LatheGeometry по явному профилю (шире середины, чем у рима)
+function buildCapBulb(radius, height){
+  const DROP = .5;
+  const pts = [
+    new THREE.Vector2(radius*.55, -DROP),
+    new THREE.Vector2(radius*.95, -DROP+height*.18),
+    new THREE.Vector2(radius*1.05, -DROP+height*.42),
+    new THREE.Vector2(radius*.7, -DROP+height*.75),
+    new THREE.Vector2(Math.max(.02,radius*.05), -DROP+height),
+  ];
+  return new THREE.LatheGeometry(pts, 24);
+}
+
+// плоский диск с коротким бортиком — "height" здесь намеренно почти не
+// используется (иначе противоречит "плоский"), бортик всегда низкий.
+function buildCapFlat(radius){
+  const DROP = .08;
+  const rimHeight = radius*.14;
+  const geo = new THREE.CylinderGeometry(radius, radius*.96, rimHeight, 24);
+  geo.translate(0, rimHeight/2-DROP, 0);
+  return geo;
+}
+
+// возвращает МАССИВ геометрий (не одна) — доли с зазорами, не единая форма
+function buildCapSegmentsGeoms(radius, height){
+  const n = RI(9,4); // 4-8
+  const gapFraction = .12;
+  const thetaLen = Math.PI*.58;
+  const rimY = radius*Math.cos(thetaLen);
+  const segAngle = (Math.PI*2/n)*(1-gapFraction);
+  const geoms = [];
+  for (let i=0;i<n;i++){
+    const phiStart = (i/n)*Math.PI*2;
+    const geo = new THREE.SphereGeometry(radius, 6, 10, phiStart, segAngle, 0, thetaLen);
+    geo.translate(0, -rimY-.5, 0);
+    geoms.push(geo);
+  }
+  return geoms;
+}
+
+function addCapShape(shape, radius, height, material, group){
+  if (shape === 'segments'){
+    for (const geo of buildCapSegmentsGeoms(radius, height)) group.add(new THREE.Mesh(geo, material));
+    return;
+  }
+  const geo = {
+    dome: () => buildCapDome(radius),
+    low: () => buildCapLow(radius),
+    deep: () => buildCapDeep(radius),
+    cone: () => buildCapCone(radius, height),
+    box: () => buildCapBox(radius),
+    bulb: () => buildCapBulb(radius, height),
+    flat: () => buildCapFlat(radius),
+  }[shape]();
+  group.add(new THREE.Mesh(geo, material));
+}
+
+// Кастомный ShaderMaterial — не через makeMaterial(), потому что паттерн
+// это не однотонная заливка. Цвета НЕ конвертируются в linear (в отличие
+// от instanceColor у бахромы/осколков) — это сырой ShaderMaterial мимо
+// автоматического colorspace-пайплайна three.js, тот же случай, что и
+// шейдер кожи в skin.js (см. фаза 1, п.7 — там разбор именно этой разницы).
+function makeCapMaterial(patternInfo, bg, fg){
+  return new THREE.ShaderMaterial({
+    side: THREE.DoubleSide,
+    uniforms: {
+      bgColor: { value: bg.clone() },
+      fgColor: { value: fg.clone() },
+      patternId: { value: patternInfo.id },
+      patternParams: { value: new THREE.Vector4(...patternInfo.params) },
+    },
+    vertexShader: `varying vec2 vUv;
+      void main(){ vUv = uv; gl_Position = projectionMatrix*modelViewMatrix*vec4(position,1.0); }`,
+    fragmentShader: `precision highp float;
+      uniform vec3 bgColor, fgColor; uniform int patternId; uniform vec4 patternParams;
+      varying vec2 vUv;
+      ${GLSL_SOURCE}
+      void main(){
+        float m = patternById(patternId, vUv, patternParams);
+        gl_FragColor = vec4(mix(bgColor, fgColor, m), 1.0);
+      }`,
+    extensions: { derivatives: true }
+  });
+}
+
+// возвращает { shape, group: THREE.Group с формой+текстурой }, плюс метаданные
+// (patternInfo, contrastRetried) — нужны наружу для проверки в create().
+function buildCap(cols){
+  const shape = pick(CAP_FAMILIES);
+  const radius = R(1.5,.95);
+  const height = radius * R(1.6,.7);
+
+  const rngLike = { R, RI, pick };
+  const patternInfo = pickPattern(rngLike, { largeScaleOnly: CAP_LARGE_SCALE_ONLY.has(shape) });
+  // 0.25 (дефолт функции) для этой палитры почти недостижим — palette.js
+  // держит все цвета близко к общей базовой светлоте. Проверено в node:
+  // на 1000 масок 0.25 не проходит НИ ОДНА пара даже после гарантированного
+  // перебора. 0.15 — чуть выше медианы реально достижимого (0.129 на тех же
+  // 1000 сидов), даёт случайному перебору шанс пройти самому, не только
+  // через fallback.
+  const { bg, fg, tries } = pickContrastingPair(rngLike, cols, .15);
+  const material = makeCapMaterial(patternInfo, bg, fg);
+
+  const capGroup = new THREE.Group();
+  capGroup.rotation.x = THREE.MathUtils.degToRad(R(15,0) * (R()<.5?-1:1));
+  addCapShape(shape, radius, height, material, capGroup);
+
+  return { shape, group: capGroup, patternName: patternInfo.name, contrastRetried: tries > 1, bg, fg };
 }
 
 /* ────────────────────────── бахрома ────────────────────────────────────
@@ -266,27 +400,32 @@ export function create(ctx){
   const accent = hueShift(cols[0], .5);
   const crownCols = [...cols, accent];
 
-  // цвет шапочки — не тот же, что у семейства, иначе сольются в одно пятно.
-  // Гарантия строгая: индекс шапочки исключается из пула семейства целиком,
-  // а не просто "авось не совпадёт".
-  const capColorIdx = RI(crownCols.length);
-  const capColor = crownCols[capColorIdx];
-  const familyCols = crownCols.filter((_,i) => i !== capColorIdx);
-
   const group = new THREE.Group();
   group.position.set(0, FOREHEAD_Y, FOREHEAD_Z);
   group.rotation.x = THREE.MathUtils.degToRad(tiltDeg);
 
-  addBaseCap(capColor, group);
+  const cap = buildCap(crownCols);
+  group.add(cap.group);
+
+  // цвета шапочки (фон+узор) — не те же, что у семейства, иначе сольются в
+  // одно пятно. Гарантия строгая: обе задействованные точки палитры
+  // исключаются из пула семейства целиком, а не просто "авось не совпадёт".
+  const familyCols = crownCols.filter(c => c !== cap.bg && c !== cap.fg);
+
   FAMILIES[familyName](radius, familyCols, group);
 
-  const fringeChance = SPARSE_FAMILIES.has(familyName) ? 1.0 : .6;
+  // low/flat физически прикрывают меньше всего — бахрома там обязательна,
+  // а не просто вероятна, как у "пустых" силуэтных семейств.
+  const fringeChance = (SPARSE_FAMILIES.has(familyName) || CAP_SPARSE.has(cap.shape)) ? 1.0 : .6;
   addFringe(radius, crownCols, group, fringeChance);
   addDecor(radius, crownCols, group);
 
   return {
     object3D: group,
     familyName,
+    capShape: cap.shape,
+    capPattern: cap.patternName,
+    capContrastRetried: cap.contrastRetried,
     dispose(){ group.traverse(o=>{ o.geometry?.dispose(); o.material?.dispose?.(); }); }
   };
 }
