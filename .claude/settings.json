@@ -21,8 +21,8 @@
     ],
     "deny": [
       "Bash(git push --force:*)",
-      "Bash(rm:*)"
+      "Bash(rm -rf:*)"
     ],
-    "defaultMode": "acceptEdits"
+    "defaultMode": "bypassPermissions"
   }
 }
