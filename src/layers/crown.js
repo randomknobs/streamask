@@ -32,11 +32,83 @@ function makeMaterial(kind, color){
   });
 }
 
+// y=0 (в этой же локальной системе группы) — уровень крепления/макушки.
+// Ниже него по-прежнему волосы, там прозрачные/проволочные материалы
+// запрещены целиком — только сплошные. Выше — где реально ничего нет под
+// элементом — обычные 60/20/20 без ограничений.
+function meshMinY(mesh){
+  mesh.geometry.computeBoundingBox();
+  const box = mesh.geometry.boundingBox.clone();
+  mesh.updateMatrix();
+  box.applyMatrix4(mesh.matrix);
+  return box.min.y;
+}
+
+function kindForMesh(mesh){
+  return meshMinY(mesh) < 0 ? 'solid' : pickKind();
+}
+
+function finishMesh(mesh, cols){
+  mesh.material = makeMaterial(kindForMesh(mesh), pick(cols));
+  return mesh;
+}
+
+// Гарантирует, что у каждого меша есть пересечение (не просто касание) с
+// ближайшим соседом — не менее minFrac от собственного габарита (диаметра
+// bounding sphere). Иначе в щели между отдельными элементами силуэта видно,
+// что под ними (волосы/фон). Работает по позиции (подтягивает элемент к
+// соседу) — это единственный универсальный способ для всех 8 семейств;
+// доворот угла как альтернатива не реализован обобщённо (см. итоговое
+// сообщение) — он специфичен для формы элемента и не переносится
+// автоматически между конусами/торами/трубами.
+function ensureOverlap(meshes, minFrac = .15){
+  if (meshes.length < 2) return;
+
+  const spheres = meshes.map(m => {
+    m.geometry.computeBoundingBox();
+    const box = m.geometry.boundingBox.clone();
+    m.updateMatrix();
+    box.applyMatrix4(m.matrix);
+    const sphere = new THREE.Sphere();
+    box.getBoundingSphere(sphere);
+    return sphere;
+  });
+
+  for (let i=0;i<meshes.length;i++){
+    let bestJ = -1, bestDist = Infinity;
+    for (let j=0;j<meshes.length;j++){
+      if (j===i) continue;
+      const d = spheres[i].center.distanceTo(spheres[j].center);
+      if (d < bestDist){ bestDist = d; bestJ = j; }
+    }
+    if (bestJ === -1) continue;
+
+    const rA = spheres[i].radius, rB = spheres[bestJ].radius;
+    const required = minFrac * (rA*2);
+    const overlap = rA + rB - bestDist;
+
+    if (overlap < required){
+      const shiftNeeded = required - overlap;
+      const dir = new THREE.Vector3().subVectors(spheres[bestJ].center, spheres[i].center);
+      if (dir.lengthSq() < 1e-8) dir.set(1,0,0);
+      dir.normalize().multiplyScalar(shiftNeeded);
+      meshes[i].position.add(dir);
+      spheres[i].center.add(dir);
+    }
+  }
+}
+
 /* ────────────────────────── силуэтные семейства ───────────────────────── */
 // Каждая функция строит основу в локальных координатах группы (y=0 — уровень
-// крепления/лоб, дальше вверх). Симметрия обязательна — либо форма сама
-// рационально-симметрична (dome/halo/rays/tiers), либо строится на одну
-// сторону и зеркалится явно (horns).
+// крепления/лоб/макушка, дальше вверх). Симметрия обязательна — либо форма
+// сама рационально-симметрична (dome/halo/rays/tiers), либо строится на
+// одну сторону и зеркалится явно (horns).
+// Материал каждого меша решается ПОСЛЕ позиционирования (finishMesh) — нужна
+// финальная позиция, чтобы понять, ниже макушки элемент или нет.
+// Overlap-проверка (ensureOverlap) применяется только там, где несколько
+// раздельных элементов физически МОГУТ повиснуть с зазором — не для
+// одноблочных форм (dome/crest) и не для horns (два рога по разные стороны
+// головы обязаны оставаться раздельными по замыслу, не сливаться).
 
 function addDome(radius, cols, group){
   const thetaLen = Math.PI*.55;
@@ -46,9 +118,10 @@ function addDome(radius, cols, group){
   const geo = new THREE.SphereGeometry(radius, wSeg, hSeg, 0, Math.PI*2, 0, thetaLen);
   const rimY = radius*Math.cos(thetaLen); // может быть отрицательным — купол чуть ниже экватора сферы
   geo.translate(0, -rimY, 0);
-  const mat = makeMaterial(pickKind(), pick(cols));
-  if ('flatShading' in mat) mat.flatShading = faceted;
-  group.add(new THREE.Mesh(geo, mat));
+  const mesh = new THREE.Mesh(geo);
+  finishMesh(mesh, cols);
+  if ('flatShading' in mesh.material) mesh.material.flatShading = faceted;
+  group.add(mesh);
 }
 
 function addCrest(radius, cols, group){
@@ -66,52 +139,63 @@ function addCrest(radius, cols, group){
   }
   const curve = new THREE.CatmullRomCurve3(pts);
   const geo = new THREE.TubeGeometry(curve, 48, radius*.06, 6, false);
-  group.add(new THREE.Mesh(geo, makeMaterial(pickKind(), pick(cols))));
+  group.add(finishMesh(new THREE.Mesh(geo), cols));
 }
 
 function addHalo(radius, cols, group){
   const n = RI(3,1);
+  const meshes = [];
   for (let i=0;i<n;i++){
     const r = radius*R(1.1,.75);
     const tube = radius*R(.09,.03);
     const geo = new THREE.TorusGeometry(r, tube, 10, 28);
-    const mesh = new THREE.Mesh(geo, makeMaterial(pickKind(), pick(cols)));
+    const mesh = new THREE.Mesh(geo);
     mesh.rotation.x = Math.PI/2 + R(.6,-.6);
     mesh.rotation.z = R(.6,-.6);
     mesh.position.y = radius*R(.9,.5) + i*radius*.15;
-    group.add(mesh);
+    meshes.push(mesh);
   }
+  ensureOverlap(meshes);
+  for (const m of meshes){ finishMesh(m, cols); group.add(m); }
 }
 
 function addRays(radius, cols, group){
   const n = RI(25,8);
+  const meshes = [];
   for (let i=0;i<n;i++){
     const a = (i/n)*Math.PI*2;
     const len = radius*R(1.1,.4);
     const geo = new THREE.ConeGeometry(radius*R(.12,.04), len, 6);
-    const mesh = new THREE.Mesh(geo, makeMaterial(pickKind(), pick(cols)));
+    const mesh = new THREE.Mesh(geo);
     const outwardTilt = R(.9,.3);
     mesh.rotation.order = 'YXZ';
     mesh.rotation.y = -a;
     mesh.rotation.x = outwardTilt;
     mesh.position.set(Math.cos(a)*radius*.6, radius*.5, Math.sin(a)*radius*.6);
-    group.add(mesh);
+    meshes.push(mesh);
   }
+  ensureOverlap(meshes);
+  for (const m of meshes){ finishMesh(m, cols); group.add(m); }
 }
 
 function addTiers(radius, cols, group){
   const n = RI(5,2);
+  const meshes = [];
   let y = 0;
   for (let i=0;i<n;i++){
     const rTop = Math.max(.06, radius*(1-(i+1)/n)*.85);
     const rBot = Math.max(.1, radius*(1-i/n)*.85);
     const h = radius*R(.5,.25);
     const geo = new THREE.CylinderGeometry(rTop, rBot, h, RI(10,6));
-    const mesh = new THREE.Mesh(geo, makeMaterial(pickKind(), pick(cols)));
+    const mesh = new THREE.Mesh(geo);
     mesh.position.y = y + h/2;
-    group.add(mesh);
+    meshes.push(mesh);
     y += h;
   }
+  // ярусы и так стоят строго друг на друге (низ следующего = верх предыдущего)
+  // — касание, не пересечение. ensureOverlap подтянет их внахлёст.
+  ensureOverlap(meshes);
+  for (const m of meshes){ finishMesh(m, cols); group.add(m); }
 }
 
 function addHorns(radius, cols, group){
@@ -123,7 +207,8 @@ function addHorns(radius, cols, group){
   ];
   const curve = new THREE.CatmullRomCurve3(pts);
   const geo = new THREE.TubeGeometry(curve, 24, radius*R(.12,.06), 8, false);
-  const right = new THREE.Mesh(geo, makeMaterial(pickKind(), pick(cols)));
+  const right = new THREE.Mesh(geo);
+  finishMesh(right, cols);
   group.add(right);
   const left = right.clone();
   left.scale.x = -1;
@@ -132,31 +217,37 @@ function addHorns(radius, cols, group){
 
 function addWrap(radius, cols, group){
   const n = RI(4,2);
+  const meshes = [];
   for (let i=0;i<n;i++){
     const r = radius*R(1.05,.85);
     const tube = radius*R(.05,.02);
     const geo = new THREE.TorusGeometry(r, tube, 8, 32);
-    const mesh = new THREE.Mesh(geo, makeMaterial(pickKind(), pick(cols)));
+    const mesh = new THREE.Mesh(geo);
     mesh.rotation.x = Math.PI/2 + R(.5,-.5);
     mesh.rotation.y = R(3.14,0);
     mesh.position.y = radius*R(.6,.15);
-    group.add(mesh);
+    meshes.push(mesh);
   }
+  ensureOverlap(meshes);
+  for (const m of meshes){ finishMesh(m, cols); group.add(m); }
 }
 
 function addPlume(radius, cols, group){
   const n = RI(9,4);
+  const meshes = [];
   for (let i=0;i<n;i++){
     const spread = n>1 ? (i/(n-1)-.5)*1.2 : 0;
     const len = radius*R(1.6,.7);
     const geo = new THREE.ConeGeometry(radius*R(.07,.03), len, 5);
-    const mesh = new THREE.Mesh(geo, makeMaterial(pickKind(), pick(cols)));
+    const mesh = new THREE.Mesh(geo);
     mesh.rotation.order = 'YXZ';
     mesh.rotation.y = spread*.6;
     mesh.rotation.x = -.6 + spread*.3;
     mesh.position.set(Math.sin(spread)*radius*.3, radius*.4, -radius*.5);
-    group.add(mesh);
+    meshes.push(mesh);
   }
+  ensureOverlap(meshes);
+  for (const m of meshes){ finishMesh(m, cols); group.add(m); }
 }
 
 const FAMILIES = { dome:addDome, crest:addCrest, halo:addHalo, rays:addRays,
@@ -299,13 +390,10 @@ function buildCap(cols){
 
   const rngLike = { R, RI, pick };
   const patternInfo = pickPattern(rngLike, { largeScaleOnly: CAP_LARGE_SCALE_ONLY.has(shape) });
-  // 0.25 (дефолт функции) для этой палитры почти недостижим — palette.js
-  // держит все цвета близко к общей базовой светлоте. Проверено в node:
-  // на 1000 масок 0.25 не проходит НИ ОДНА пара даже после гарантированного
-  // перебора. 0.15 — чуть выше медианы реально достижимого (0.129 на тех же
-  // 1000 сидов), даёт случайному перебору шанс пройти самому, не только
-  // через fallback.
-  const { bg, fg, tries } = pickContrastingPair(rngLike, cols, .15);
+  // palette.js теперь разводит светлоту явными слотами по 0.25..0.8
+  // (было l*R(1.15,.8) — кучковало все цвета, отсюда и временное снижение
+  // порога до 0.15). С разведённой светлотой 0.25 достижим — см. node-проверку.
+  const { bg, fg, tries } = pickContrastingPair(rngLike, cols, .25);
   const material = makeCapMaterial(patternInfo, bg, fg);
 
   const capGroup = new THREE.Group();
@@ -319,16 +407,15 @@ function buildCap(cols){
    ~60% масок по умолчанию, но 100% для семейств с маленькой площадью
    (horns/halo/plume) — сами по себе они силуэт не держат, без бахромы
    волосы остаются открыты по бокам. Инстансим — до 80 элементов на маску,
-   иначе просядет fps. Один тип материала на всю бахрому (это же один
-   "пучок волос", логично, что он однородный). */
+   иначе просядет fps. Она в зоне волос по определению (свисает вдоль
+   висков) — всегда solid, никогда glass/wire, см. п.2 разбора зазоров. */
 function addFringe(radius, cols, group, chance){
   if (R() >= chance) return;
 
   const perSide = RI(41,10);
   const total = perSide*2;
-  const kind = pickKind();
   const geo = new THREE.ConeGeometry(radius*.025, 1, 5);
-  const mat = makeMaterial(kind, 0xffffff);
+  const mat = makeMaterial('solid', 0xffffff);
   const imesh = new THREE.InstancedMesh(geo, mat, total);
   imesh.frustumCulled = false;
 
@@ -356,7 +443,9 @@ function addFringe(radius, cols, group, chance){
 
 /* ────────────────────────── декор ──────────────────────────────────────
    0-12 мелких элементов из словаря примитивов, симметрично, до 20% доли —
-   намеренно асимметричные (см. asymRate). */
+   намеренно асимметричные (см. asymRate). Позиция всегда y>0 (радиус*0.2..1.1)
+   по построению, но зональность решаем через finishMesh, а не полагаемся
+   на это — так же, как и остальные семейства. */
 const DECOR_GEOMS = [
   ()=> new THREE.SphereGeometry(1, RI(12,6), RI(8,5)),
   ()=> new THREE.RingGeometry(.5, 1, RI(16,8)),
@@ -371,11 +460,13 @@ function addDecor(radius, cols, group){
   for (let i=0;i<count;i++){
     const geo = pick(DECOR_GEOMS)();
     const s = radius*R(.14,.05);
-    const mesh = new THREE.Mesh(geo, makeMaterial(pickKind(), pick(cols)));
+    const mesh = new THREE.Mesh(geo);
     const a = R(Math.PI*2), r = radius*R(1.0,.6), y = radius*R(1.1,.2);
     mesh.scale.setScalar(s);
     mesh.position.set(Math.cos(a)*r, y, Math.sin(a)*r);
     mesh.rotation.set(R(6.28),R(6.28),R(6.28));
+    mesh.userData.crownPart = 'decor'; // для отладки/проверки — decor не входит в overlap-гарантию силуэта
+    finishMesh(mesh, cols);
     group.add(mesh);
 
     if (R() >= asymRate && Math.abs(mesh.position.x) > 1e-3){
