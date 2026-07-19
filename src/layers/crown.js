@@ -161,12 +161,34 @@ function addPlume(radius, cols, group){
 const FAMILIES = { dome:addDome, crest:addCrest, halo:addHalo, rays:addRays,
                     tiers:addTiers, horns:addHorns, wrap:addWrap, plume:addPlume };
 
+// Обязательная база под ВСЕ семейства — низкая шапочка, плотно облегающая
+// голову, семейство ставится поверх неё. Без неё горны/гало/плюм/гребень/
+// лучи не держат силуэт и волосы остаются открыты по бокам.
+// Всегда solid (никогда glass/wire) — она должна реально перекрывать.
+// Радиус фиксирован (не как у семейства — та часть декоративная и растёт
+// до 1.8, эта всегда плотно прилегает).
+function addBaseCap(color, group){
+  const capRadius = R(1.2,1.1);
+  const thetaLen = Math.PI*.62; // за экватор — иначе не закроет затылок при наклоне вперёд
+  const geo = new THREE.SphereGeometry(capRadius, 24, 16, 0, Math.PI*2, 0, thetaLen);
+  // опускаем ниже уровня крепления (лоб), чтобы дойти до бровей спереди
+  // и ниже линии ушей по бокам — независимо от thetaLen, край ровно на -DROP.
+  const DROP = .5;
+  const rimY = capRadius*Math.cos(thetaLen);
+  geo.translate(0, -rimY-DROP, 0);
+  const mat = makeMaterial('solid', color);
+  mat.flatShading = false;
+  group.add(new THREE.Mesh(geo, mat));
+}
+
 /* ────────────────────────── бахрома ────────────────────────────────────
-   ~60% масок, независимо от семейства. Инстансим — до 80 элементов на
-   маску, иначе просядет fps. Один тип материала на всю бахрому (это же
-   один "пучок волос", логично, что он однородный). */
-function addFringe(radius, cols, group){
-  if (R() >= .6) return;
+   ~60% масок по умолчанию, но 100% для семейств с маленькой площадью
+   (horns/halo/plume) — сами по себе они силуэт не держат, без бахромы
+   волосы остаются открыты по бокам. Инстансим — до 80 элементов на маску,
+   иначе просядет fps. Один тип материала на всю бахрому (это же один
+   "пучок волос", логично, что он однородный). */
+function addFringe(radius, cols, group, chance){
+  if (R() >= chance) return;
 
   const perSide = RI(41,10);
   const total = perSide*2;
@@ -233,6 +255,8 @@ function addDecor(radius, cols, group){
 // головной убор — жёстко крепится к анкеру, фиксированная поза из сида,
 // на blendshapes не реагирует (вся жизнь — от движения головы через анкер).
 // Полностью пересоздаётся на каждый generate(), как shards/eyes/brows.
+const SPARSE_FAMILIES = new Set(['horns','halo','plume']);
+
 export function create(ctx){
   const { palette: cols } = ctx;
 
@@ -242,12 +266,22 @@ export function create(ctx){
   const accent = hueShift(cols[0], .5);
   const crownCols = [...cols, accent];
 
+  // цвет шапочки — не тот же, что у семейства, иначе сольются в одно пятно.
+  // Гарантия строгая: индекс шапочки исключается из пула семейства целиком,
+  // а не просто "авось не совпадёт".
+  const capColorIdx = RI(crownCols.length);
+  const capColor = crownCols[capColorIdx];
+  const familyCols = crownCols.filter((_,i) => i !== capColorIdx);
+
   const group = new THREE.Group();
   group.position.set(0, FOREHEAD_Y, FOREHEAD_Z);
   group.rotation.x = THREE.MathUtils.degToRad(tiltDeg);
 
-  FAMILIES[familyName](radius, crownCols, group);
-  addFringe(radius, crownCols, group);
+  addBaseCap(capColor, group);
+  FAMILIES[familyName](radius, familyCols, group);
+
+  const fringeChance = SPARSE_FAMILIES.has(familyName) ? 1.0 : .6;
+  addFringe(radius, crownCols, group, fringeChance);
   addDecor(radius, crownCols, group);
 
   return {
