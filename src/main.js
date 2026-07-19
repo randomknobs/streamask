@@ -7,6 +7,7 @@ import * as shardsLayer from './layers/shards.js';
 import * as mouthLayer from './layers/mouth.js';
 import * as eyesLayer from './layers/eyes.js';
 import * as browsLayer from './layers/brows.js';
+import * as crownLayer from './layers/crown.js';
 import { setupUI } from './ui.js';
 
 const $ = id => document.getElementById(id);
@@ -36,12 +37,14 @@ let shards = null;
 let mouth = null;
 let eyes = null;
 let brows = null;
+let crown = null;
 let currentSeed = '';
 
 function generate(seedStr){
   if(shards){ anchor.remove(shards.object3D); shards.dispose(); }
   if(eyes){ anchor.remove(eyes.object3D); eyes.dispose(); }
   if(brows){ anchor.remove(brows.object3D); brows.dispose(); }
+  if(crown){ anchor.remove(crown.object3D); crown.dispose(); }
 
   currentSeed = seedStr || Math.random().toString(36).slice(2,9);
   const seedNum = seedFrom(currentSeed);
@@ -53,6 +56,7 @@ function generate(seedStr){
 
   shards = shardsLayer.create({ scene, palette: cols, params: {} });
   anchor.add(shards.object3D);
+  shards.object3D.visible = showShards;
 
   eyes = eyesLayer.create({ palette: cols, params: {}, seedNum });
   anchor.add(eyes.object3D);
@@ -60,6 +64,10 @@ function generate(seedStr){
   brows = browsLayer.create({ palette: cols, params: {} });
   anchor.add(brows.object3D);
   $('browPreset').textContent = 'брови: ' + brows.presetName;
+
+  crown = crownLayer.create({ palette: cols, params: {} });
+  anchor.add(crown.object3D);
+  crown.object3D.visible = showCrown;
 
   skin.applyPalette(cols);
   mouth.applyPalette(cols);
@@ -122,7 +130,7 @@ function resize(){
 addEventListener('resize', resize);
 
 /* ────────────────────────── состояние панели ──────────────────── */
-let userScale = 1, smoothing = .6, showSkin = true, showShards = true, skinOpacity = 1;
+let userScale = 1, smoothing = .6, showSkin = true, showShards = true, showCrown = true, skinOpacity = 1;
 
 /* ────────────────────────── loop ──────────────────────────────── */
 let lastTs = -1, t0 = performance.now(), frames = 0, fps = 0, fpsT = performance.now();
@@ -144,9 +152,14 @@ function loop(){
       anchor.updateMatrixWorld(true);
       if(showSkin) skin.updateGeometry(lms, aspect);
       if(mouth) mouth.updateGeometry(lms, aspect);
-      anchor.visible = showShards;
+      // anchor всегда виден, пока лицо трекается — shards/crown управляют
+      // своей видимостью сами (независимые тумблеры). eyes/brows пока без
+      // отдельного тумблера (фаза 4), видны вместе с анкером.
+      anchor.visible = true;
       if(skin) skin.object3D.visible = showSkin;
       if(mouth) mouth.object3D.visible = showSkin;
+      if(shards) shards.object3D.visible = showShards;
+      if(crown) crown.object3D.visible = showCrown;
 
       const bs = blend.update(res.faceBlendshapes?.[0]?.categories);
       jawOpen = bs.jawOpen || 0;
@@ -178,6 +191,7 @@ setupUI({
   onAutoTick: () => generate(),
   onToggleSkin: () => { showSkin = !showSkin; return showSkin; },
   onToggleShards: () => { showShards = !showShards; return showShards; },
+  onToggleCrown: () => { showCrown = !showCrown; return showCrown; },
   onSmoothing: v => smoothing = v,
   onScale: v => userScale = v,
   onSkinOpacity: v => { skinOpacity = v; if(skin) skin.setOpacityMultiplier(v); },
