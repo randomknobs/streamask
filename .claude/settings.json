@@ -8,11 +8,16 @@
       "Bash(git log:*)",
       "Bash(git diff:*)",
       "Bash(git show:*)",
+      "Bash(git checkout:*)",
+      "Bash(node:*)",
+      "Bash(npx:*)",
       "Bash(curl:*)",
       "Bash(ls:*)",
       "Bash(cat:*)",
       "Bash(mkdir:*)",
-      "Bash(mv:*)"
+      "Bash(mv:*)",
+      "Bash(cp:*)",
+      "Bash(touch:*)"
     ],
     "deny": [
       "Bash(git push --force:*)",
