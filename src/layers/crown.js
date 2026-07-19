@@ -32,24 +32,32 @@ function makeMaterial(kind, color){
   });
 }
 
-// y=0 (в этой же локальной системе группы) — уровень крепления/макушки.
-// Ниже него по-прежнему волосы, там прозрачные/проволочные материалы
-// запрещены целиком — только сплошные. Выше — где реально ничего нет под
-// элементом — обычные 60/20/20 без ограничений.
-function meshMinY(mesh){
+// Геометрическая проверка "внутри головы", НЕ по высоте. y=0 — точка
+// крепления (лоб), но макушка физически ВЫШЕ этой линии — старая проверка
+// "ниже y=0 → solid" пропускала wireframe/glass прямо над головой, где под
+// ними всё ещё волосы. Правильный тест — пересечение bbox со сферой головы:
+// центр чуть выше точки крепления (лоб не в центре черепа, а спереди-сверху),
+// радиус — реальный радиус построенной шапочки, не независимая константа.
+const HEAD_UP_OFFSET_FRAC = .3;
+
+export function makeHeadSphere(capRadius){
+  return new THREE.Sphere(new THREE.Vector3(0, capRadius*HEAD_UP_OFFSET_FRAC, 0), capRadius);
+}
+
+function meshIntersectsHead(mesh, headSphere){
   mesh.geometry.computeBoundingBox();
   const box = mesh.geometry.boundingBox.clone();
   mesh.updateMatrix();
   box.applyMatrix4(mesh.matrix);
-  return box.min.y;
+  return box.intersectsSphere(headSphere); // касание тоже считается пересечением
 }
 
-function kindForMesh(mesh){
-  return meshMinY(mesh) < 0 ? 'solid' : pickKind();
+function kindForMesh(mesh, headSphere){
+  return meshIntersectsHead(mesh, headSphere) ? 'solid' : pickKind();
 }
 
-function finishMesh(mesh, cols){
-  mesh.material = makeMaterial(kindForMesh(mesh), pick(cols));
+function finishMesh(mesh, cols, headSphere){
+  mesh.material = makeMaterial(kindForMesh(mesh, headSphere), pick(cols));
   return mesh;
 }
 
@@ -99,18 +107,18 @@ function ensureOverlap(meshes, minFrac = .15){
 }
 
 /* ────────────────────────── силуэтные семейства ───────────────────────── */
-// Каждая функция строит основу в локальных координатах группы (y=0 — уровень
-// крепления/лоб/макушка, дальше вверх). Симметрия обязательна — либо форма
-// сама рационально-симметрична (dome/halo/rays/tiers), либо строится на
-// одну сторону и зеркалится явно (horns).
+// Каждая функция строит основу в локальных координатах группы (y=0 — точка
+// крепления, лоб). Симметрия обязательна — либо форма сама рационально-
+// симметрична (dome/halo/rays/tiers), либо строится на одну сторону и
+// зеркалится явно (horns).
 // Материал каждого меша решается ПОСЛЕ позиционирования (finishMesh) — нужна
-// финальная позиция, чтобы понять, ниже макушки элемент или нет.
+// финальная позиция, чтобы проверить пересечение со сферой головы (headSphere).
 // Overlap-проверка (ensureOverlap) применяется только там, где несколько
 // раздельных элементов физически МОГУТ повиснуть с зазором — не для
 // одноблочных форм (dome/crest) и не для horns (два рога по разные стороны
 // головы обязаны оставаться раздельными по замыслу, не сливаться).
 
-function addDome(radius, cols, group){
+function addDome(radius, cols, group, headSphere){
   const thetaLen = Math.PI*.55;
   const faceted = R()<.5;
   const wSeg = faceted ? RI(10,6) : RI(28,16);
@@ -119,12 +127,12 @@ function addDome(radius, cols, group){
   const rimY = radius*Math.cos(thetaLen); // может быть отрицательным — купол чуть ниже экватора сферы
   geo.translate(0, -rimY, 0);
   const mesh = new THREE.Mesh(geo);
-  finishMesh(mesh, cols);
+  finishMesh(mesh, cols, headSphere);
   if ('flatShading' in mesh.material) mesh.material.flatShading = faceted;
   group.add(mesh);
 }
 
-function addCrest(radius, cols, group){
+function addCrest(radius, cols, group, headSphere){
   const jagged = R()<.5;
   const height = R(1.4,.6)*radius;
   const halfLen = radius*.9;
@@ -139,10 +147,10 @@ function addCrest(radius, cols, group){
   }
   const curve = new THREE.CatmullRomCurve3(pts);
   const geo = new THREE.TubeGeometry(curve, 48, radius*.06, 6, false);
-  group.add(finishMesh(new THREE.Mesh(geo), cols));
+  group.add(finishMesh(new THREE.Mesh(geo), cols, headSphere));
 }
 
-function addHalo(radius, cols, group){
+function addHalo(radius, cols, group, headSphere){
   const n = RI(3,1);
   const meshes = [];
   for (let i=0;i<n;i++){
@@ -156,10 +164,10 @@ function addHalo(radius, cols, group){
     meshes.push(mesh);
   }
   ensureOverlap(meshes);
-  for (const m of meshes){ finishMesh(m, cols); group.add(m); }
+  for (const m of meshes){ finishMesh(m, cols, headSphere); group.add(m); }
 }
 
-function addRays(radius, cols, group){
+function addRays(radius, cols, group, headSphere){
   const n = RI(25,8);
   const meshes = [];
   for (let i=0;i<n;i++){
@@ -175,10 +183,10 @@ function addRays(radius, cols, group){
     meshes.push(mesh);
   }
   ensureOverlap(meshes);
-  for (const m of meshes){ finishMesh(m, cols); group.add(m); }
+  for (const m of meshes){ finishMesh(m, cols, headSphere); group.add(m); }
 }
 
-function addTiers(radius, cols, group){
+function addTiers(radius, cols, group, headSphere){
   const n = RI(5,2);
   const meshes = [];
   let y = 0;
@@ -195,10 +203,10 @@ function addTiers(radius, cols, group){
   // ярусы и так стоят строго друг на друге (низ следующего = верх предыдущего)
   // — касание, не пересечение. ensureOverlap подтянет их внахлёст.
   ensureOverlap(meshes);
-  for (const m of meshes){ finishMesh(m, cols); group.add(m); }
+  for (const m of meshes){ finishMesh(m, cols, headSphere); group.add(m); }
 }
 
-function addHorns(radius, cols, group){
+function addHorns(radius, cols, group, headSphere){
   const outward = R()<.5;
   const pts = [
     new THREE.Vector3(radius*.5, radius*.2, 0),
@@ -208,14 +216,14 @@ function addHorns(radius, cols, group){
   const curve = new THREE.CatmullRomCurve3(pts);
   const geo = new THREE.TubeGeometry(curve, 24, radius*R(.12,.06), 8, false);
   const right = new THREE.Mesh(geo);
-  finishMesh(right, cols);
+  finishMesh(right, cols, headSphere);
   group.add(right);
   const left = right.clone();
   left.scale.x = -1;
   group.add(left);
 }
 
-function addWrap(radius, cols, group){
+function addWrap(radius, cols, group, headSphere){
   const n = RI(4,2);
   const meshes = [];
   for (let i=0;i<n;i++){
@@ -229,10 +237,10 @@ function addWrap(radius, cols, group){
     meshes.push(mesh);
   }
   ensureOverlap(meshes);
-  for (const m of meshes){ finishMesh(m, cols); group.add(m); }
+  for (const m of meshes){ finishMesh(m, cols, headSphere); group.add(m); }
 }
 
-function addPlume(radius, cols, group){
+function addPlume(radius, cols, group, headSphere){
   const n = RI(9,4);
   const meshes = [];
   for (let i=0;i<n;i++){
@@ -247,7 +255,7 @@ function addPlume(radius, cols, group){
     meshes.push(mesh);
   }
   ensureOverlap(meshes);
-  for (const m of meshes){ finishMesh(m, cols); group.add(m); }
+  for (const m of meshes){ finishMesh(m, cols, headSphere); group.add(m); }
 }
 
 const FAMILIES = { dome:addDome, crest:addCrest, halo:addHalo, rays:addRays,
@@ -400,7 +408,7 @@ function buildCap(cols){
   capGroup.rotation.x = THREE.MathUtils.degToRad(R(15,0) * (R()<.5?-1:1));
   addCapShape(shape, radius, height, material, capGroup);
 
-  return { shape, group: capGroup, patternName: patternInfo.name, contrastRetried: tries > 1, bg, fg };
+  return { shape, radius, group: capGroup, patternName: patternInfo.name, contrastRetried: tries > 1, bg, fg };
 }
 
 /* ────────────────────────── бахрома ────────────────────────────────────
@@ -454,7 +462,7 @@ const DECOR_GEOMS = [
   ()=> new THREE.CircleGeometry(1, RI(8,5)),
 ];
 
-function addDecor(radius, cols, group){
+function addDecor(radius, cols, group, headSphere){
   const count = RI(13,0);
   const asymRate = .2;
   for (let i=0;i<count;i++){
@@ -466,12 +474,27 @@ function addDecor(radius, cols, group){
     mesh.position.set(Math.cos(a)*r, y, Math.sin(a)*r);
     mesh.rotation.set(R(6.28),R(6.28),R(6.28));
     mesh.userData.crownPart = 'decor'; // для отладки/проверки — decor не входит в overlap-гарантию силуэта
-    finishMesh(mesh, cols);
+
+    const willMirror = R() >= asymRate && Math.abs(mesh.position.x) > 1e-3;
+    let mirror = null;
+    if (willMirror){
+      mirror = mesh.clone();
+      mirror.position.x *= -1;
+      // случайный 3D-поворот (см. выше) делает bbox несимметричным — зеркало
+      // по одной лишь позиции НЕ является честным геометрическим отражением
+      // (в отличие от horns, где зеркалит scale.x саму геометрию). Проверку
+      // прохождения оригиналом нельзя переносить на копию без пересчёта —
+      // нашёл на 1000 сидов ровно этот случай: оригинал снаружи сферы,
+      // зеркало от сдвига чуть задело её. Поэтому проверяем ОБЕ позиции.
+    }
+    const kind = (meshIntersectsHead(mesh, headSphere) || (mirror && meshIntersectsHead(mirror, headSphere)))
+      ? 'solid' : pickKind();
+    const material = makeMaterial(kind, pick(cols));
+    mesh.material = material;
     group.add(mesh);
 
-    if (R() >= asymRate && Math.abs(mesh.position.x) > 1e-3){
-      const mirror = mesh.clone();
-      mirror.position.x *= -1;
+    if (mirror){
+      mirror.material = material;
       group.add(mirror);
     }
   }
@@ -498,23 +521,29 @@ export function create(ctx){
   const cap = buildCap(crownCols);
   group.add(cap.group);
 
+  // сфера головы для проверки "что реально снаружи, а что нет" — центр чуть
+  // выше точки крепления (лоб не в центре черепа), радиус — РЕАЛЬНЫЙ радиус
+  // построенной шапочки, не независимая константа. См. kindForMesh/finishMesh.
+  const headSphere = makeHeadSphere(cap.radius);
+
   // цвета шапочки (фон+узор) — не те же, что у семейства, иначе сольются в
   // одно пятно. Гарантия строгая: обе задействованные точки палитры
   // исключаются из пула семейства целиком, а не просто "авось не совпадёт".
   const familyCols = crownCols.filter(c => c !== cap.bg && c !== cap.fg);
 
-  FAMILIES[familyName](radius, familyCols, group);
+  FAMILIES[familyName](radius, familyCols, group, headSphere);
 
   // low/flat физически прикрывают меньше всего — бахрома там обязательна,
   // а не просто вероятна, как у "пустых" силуэтных семейств.
   const fringeChance = (SPARSE_FAMILIES.has(familyName) || CAP_SPARSE.has(cap.shape)) ? 1.0 : .6;
   addFringe(radius, crownCols, group, fringeChance);
-  addDecor(radius, crownCols, group);
+  addDecor(radius, crownCols, group, headSphere);
 
   return {
     object3D: group,
     familyName,
     capShape: cap.shape,
+    capRadius: cap.radius,
     capPattern: cap.patternName,
     capContrastRetried: cap.contrastRetried,
     dispose(){ group.traverse(o=>{ o.geometry?.dispose(); o.material?.dispose?.(); }); }
