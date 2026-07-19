@@ -165,7 +165,10 @@ function loop(){
       jawOpen = bs.jawOpen || 0;
       mouthEnergy = jawOpen*.7 + (bs.mouthFunnel||0)*.2 + (bs.mouthPucker||0)*.1;
       if(eyes) eyes.updateGeometry(lms, aspect, anchor, bs.eyeBlinkRight||0, bs.eyeBlinkLeft||0, jawOpen);
-      if(brows) brows.update(bs.browDownLeft||0, bs.browDownRight||0);
+      if(brows){
+        brows.updateGeometry(lms, aspect, anchor);
+        brows.update(bs.browDownLeft||0, bs.browDownRight||0);
+      }
     } else {
       anchor.visible = false;
       if(skin) skin.object3D.visible = false;
