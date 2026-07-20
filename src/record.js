@@ -30,9 +30,17 @@ const ALPHA_MIME_CANDIDATES = [
   'video/webm;codecs=vp9.0,opus',
 ];
 
-function pickSupportedMime(candidates){
+// Явный список codecs= в mimeType — не подсказка, а ИСЧЕРПЫВАЮЩИЙ список
+// того, что MediaRecorder имеет право писать: если в стриме есть аудиотрек,
+// а codecs называет только видео-кодек, аудио молча выбрасывается, хотя
+// формально запись идёт без единой ошибки. Эти два кандидата называют
+// только видео — пропускаем их, когда в стриме реально есть звук.
+const AUDIO_UNSAFE_VIDEO_ONLY = new Set(['video/mp4;codecs=avc1', 'video/webm;codecs=vp9']);
+
+export function pickSupportedMime(candidates, { hasAudio = false } = {}){
   if (typeof MediaRecorder === 'undefined') return '';
   for (const m of candidates){
+    if (hasAudio && AUDIO_UNSAFE_VIDEO_ONLY.has(m)) continue;
     if (MediaRecorder.isTypeSupported?.(m)) return m;
   }
   return '';
@@ -140,16 +148,22 @@ export function createRecorder({ video, glCanvas }){
     const tracks = [...capturedStream.getVideoTracks()];
     if (micStream) tracks.push(...micStream.getAudioTracks());
     const finalStream = new MediaStream(tracks);
+    const hasAudio = finalStream.getAudioTracks().length > 0;
 
     const mimeType = transparentMode && transparentSupported
-      ? pickSupportedMime(ALPHA_MIME_CANDIDATES)
-      : pickSupportedMime(VIDEO_MIME_CANDIDATES);
+      ? pickSupportedMime(ALPHA_MIME_CANDIDATES, { hasAudio })
+      : pickSupportedMime(VIDEO_MIME_CANDIDATES, { hasAudio });
 
     mediaRecorder = new MediaRecorder(finalStream, {
       ...(mimeType ? { mimeType } : {}),
       videoBitsPerSecond: BITRATE
     });
     lastMime = mediaRecorder.mimeType || mimeType || 'video/webm';
+    // видно в консоли при каждом старте записи — какой mimeType реально
+    // выбрался и какие треки (с kind) ушли в MediaRecorder, чтобы вопрос
+    // "куда делось аудио" был проверяем без гадания.
+    console.log('[record] mimeType:', lastMime, 'tracks:',
+      finalStream.getTracks().map(t => `${t.kind}(${t.label || t.id})`));
     chunks = [];
     recordStartTs = performance.now();
     warnedLong = false;

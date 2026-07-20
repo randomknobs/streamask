@@ -224,7 +224,61 @@ function downloadBlob(blob, filename){
   URL.revokeObjectURL(url);
 }
 
-let micStreamForRecording = null;
+/* ─────────────────────── общий поток микрофона ───────────────────
+   getUserMedia({audio}) запрашивается не более одного раза на выбранное
+   устройство и кэшируется здесь — и запись, и (позже) анализатор фазы 7
+   переиспользуют один и тот же MediaStream вместо двух независимых
+   разрешений/дорожек. */
+let micStream = null;
+let micStreamDeviceId = undefined;
+
+async function ensureMicStream(deviceId){
+  if (micStream && micStreamDeviceId === deviceId) return micStream;
+  if (micStream) micStream.getTracks().forEach(t => t.stop());
+  const constraints = { audio: deviceId ? { deviceId: { exact: deviceId } } : true };
+  micStream = await navigator.mediaDevices.getUserMedia(constraints);
+  micStreamDeviceId = deviceId;
+  await listMicDevices();
+  return micStream;
+}
+
+function stopMicStream(){
+  if (micStream) micStream.getTracks().forEach(t => t.stop());
+  micStream = null;
+  micStreamDeviceId = undefined;
+}
+
+async function listMicDevices(){
+  const sel = $('micDevice');
+  const devs = (await navigator.mediaDevices.enumerateDevices())
+                 .filter(d => d.kind === 'audioinput');
+  const active = micStream?.getAudioTracks()[0]?.getSettings()?.deviceId;
+  sel.innerHTML = '';
+  devs.forEach((d,i) => {
+    const o = document.createElement('option');
+    o.value = d.deviceId; o.textContent = d.label || `microphone ${i+1}`;
+    if (d.deviceId === active) o.selected = true;
+    sel.appendChild(o);
+  });
+}
+
+$('micToggle').onchange = async () => {
+  if ($('micToggle').checked){
+    try { await ensureMicStream($('micDevice').value || undefined); }
+    catch(e){
+      console.error(e);
+      alert('Could not access the microphone: ' + e.message);
+      $('micToggle').checked = false;
+    }
+  } else {
+    stopMicStream();
+  }
+};
+$('micDevice').onchange = async () => {
+  if (!$('micToggle').checked) return;
+  try { await ensureMicStream($('micDevice').value || undefined); }
+  catch(e){ console.error(e); alert('Could not access the microphone: ' + e.message); }
+};
 
 async function toggleRecording(){
   if (recorder.isRecording){
@@ -234,10 +288,10 @@ async function toggleRecording(){
 
   const wantMic = $('micToggle').checked;
   const transparent = $('transparentToggle').checked;
-  micStreamForRecording = null;
+  let mic = null;
   if (wantMic){
     try {
-      micStreamForRecording = await navigator.mediaDevices.getUserMedia({ audio:true });
+      mic = await ensureMicStream($('micDevice').value || undefined);
     } catch(e){
       console.error(e);
       alert('Could not access the microphone: ' + e.message + '. Recording without audio.');
@@ -245,7 +299,7 @@ async function toggleRecording(){
   }
 
   const started = recorder.startRecording({
-    micStream: micStreamForRecording,
+    micStream: mic,
     transparent,
     onTick: sec => { $('recTimer').textContent = formatTime(sec); },
     onStop: (blob, mime) => {
@@ -253,7 +307,6 @@ async function toggleRecording(){
       $('record').classList.remove('on');
       $('record').textContent = '● record (V)';
       $('recFormatNote').style.display = 'none';
-      if (micStreamForRecording){ micStreamForRecording.getTracks().forEach(t=>t.stop()); micStreamForRecording = null; }
       downloadBlob(blob, `streamask-${currentSeed}-${Date.now()}.${extensionForMime(mime)}`);
       updateShareButtonLabel();
     },
@@ -262,7 +315,6 @@ async function toggleRecording(){
 
   if (!started){
     alert('Recording is not supported in this browser.');
-    if (micStreamForRecording){ micStreamForRecording.getTracks().forEach(t=>t.stop()); micStreamForRecording = null; }
     return;
   }
 
@@ -330,8 +382,16 @@ function doShare(){
 
   if (navigator.canShare?.({ files:[file] })){
     navigator.share({ files:[file], title:'streamask', text:shareText }).catch(e => {
-      // отмену шаринга пользователем не показываем как ошибку
-      if (e.name !== 'AbortError') console.error(e);
+      if (e.name === 'AbortError') return; // отмена пользователем — молча, не ошибка
+      if (e.name === 'NotAllowedError'){
+        // canShare() сказал "да", но share() всё равно отказал (activation/
+        // политика — конкретная причина браузеру виднее, чем нам) — не
+        // тупик для кнопки, откатываемся на скачивание файла.
+        console.warn('navigator.share rejected with NotAllowedError, falling back to download:', e);
+        downloadBlob(file, file.name);
+        return;
+      }
+      console.error(e);
     });
   } else {
     downloadBlob(file, file.name);
@@ -547,6 +607,7 @@ async function start(deviceId){
   try {
     await initCam(deviceId);
     await listDevices();
+    await listMicDevices();
     $('gate').classList.add('done');
     started = true;
     await initMP();
