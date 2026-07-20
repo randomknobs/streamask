@@ -2,6 +2,21 @@ import * as THREE from 'three';
 import { FaceLandmarker, FilesetResolver } from
   'https://cdn.jsdelivr.net/npm/@mediapipe/tasks-vision@0.10.12/vision_bundle.mjs';
 
+// ─── адаптивное сглаживание лендмарков (см. createLandmarkSmoother) ───────
+// Коэффициент лерпа считается от среднего смещения лендмарков за кадр, не
+// задаётся вручную слайдером. Пороги/кривая — константы здесь, эмпирические
+// (лендмарки в нормализованном 0..1 видео-пространстве): MOTION_LOW/HIGH —
+// границы среднего смещения на кадр в этих единицах, LERP_MIN/MAX —
+// соответствующие им коэффициенты. Почти неподвижное лицо (дрожь трекера,
+// не реальное движение) — сильное сглаживание (LERP_MIN); резкий поворот
+// головы — коэффициент почти LERP_MAX, слой практически прыгает на новую
+// позицию без визуального отставания. LERP_MAX=0.92 даёт ≥90% схождения к
+// сырой позиции за один кадр при резком движении (см. verify в scratchpad).
+const MOTION_LOW = 0.004;
+const MOTION_HIGH = 0.05;
+const LERP_MIN = 0.06;
+const LERP_MAX = 0.92;
+
 export async function loadLandmarker(){
   const fileset = await FilesetResolver.forVisionTasks(
     'https://cdn.jsdelivr.net/npm/@mediapipe/tasks-vision@0.10.12/wasm');
@@ -30,15 +45,34 @@ export function toWorld(lm, aspect, out){
 // MediaPipe, до toWorld) — это ПРОСТРАНСТВО, в котором лендмарки приходят
 // каждый кадр, и слои сами вызывают toWorld() над уже сглаженными точками
 // точно так же, как раньше вызывали его над сырыми.
+//
+// Сила сглаживания — АДАПТИВНАЯ, не ручной слайдер: считаем среднее
+// смещение лендмарков за кадр (сырые относительно уже сглаженного
+// состояния — это и есть "куда сейчас нужно доехать") и коэффициент лерпа
+// берём по кривой от этой величины (константы MOTION_LOW/HIGH, LERP_MIN/MAX
+// — в начале файла).
+function smoothstep01(t){ return t*t*(3-2*t); }
+
+function adaptiveLerpK(avgDisplacement){
+  const t = Math.min(1, Math.max(0, (avgDisplacement - MOTION_LOW) / (MOTION_HIGH - MOTION_LOW)));
+  return LERP_MIN + (LERP_MAX - LERP_MIN) * smoothstep01(t);
+}
+
 export function createLandmarkSmoother(){
   let smoothed = null; // держим один и тот же массив {x,y,z}, мутируем на месте
   return {
-    update(rawLms, smoothing){
+    update(rawLms){
       if (!smoothed){
         smoothed = rawLms.map(p => ({ x:p.x, y:p.y, z:p.z }));
         return smoothed;
       }
-      const lerpK = Math.max(.04, 1 - smoothing);
+      let sumDist = 0;
+      for (let i=0;i<rawLms.length;i++){
+        const s = smoothed[i], r = rawLms[i];
+        const dx = r.x-s.x, dy = r.y-s.y, dz = r.z-s.z;
+        sumDist += Math.sqrt(dx*dx + dy*dy + dz*dz);
+      }
+      const lerpK = adaptiveLerpK(sumDist / rawLms.length);
       for (let i=0;i<rawLms.length;i++){
         const s = smoothed[i], r = rawLms[i];
         s.x += (r.x - s.x) * lerpK;

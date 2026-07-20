@@ -156,9 +156,11 @@ export function create(ctx){
     const scale = { x:s, y:s*R(1.6,.5), z:s*R(1.4,.4) };
     const color = toLinear(pick(cols));
     const kind = pickKind();
-    // реакция на рот: mouthK 0..0.8 (часть элементов не реагирует вовсе),
-    // mouthInvert — эта часть сжимается вместо роста при открытии рта.
-    const mouthK = R()<.35 ? 0 : R(.8,0);
+    // реакция на рот: mouthK 0..2.0 (часть элементов не реагирует вовсе —
+    // те же 35%, что и раньше: контраст между статичными и скачущими
+    // элементами важен сам по себе), mouthInvert — эта часть сжимается
+    // вместо роста при открытии рта.
+    const mouthK = R()<.35 ? 0 : R(2.0,0);
     const mouthInvert = R()<.25;
     const key = geomIdx + '|' + belt + '|' + kind;
     if (!geomMatCache.has(key)){
@@ -242,7 +244,7 @@ export function create(ctx){
     update(state){
       const t = state.t;
       const mouthEnergy = state.mouthEnergy || 0;
-      const spinMul = 1 + mouthEnergy*2;
+      const spinMul = 1 + mouthEnergy*5;
       const touched = new Set();
       for (const a of anim){
         a.euler.x += a.spin.x*.01*spinMul;
@@ -263,8 +265,8 @@ export function create(ctx){
 
         posV.copy(a.pos);
         if (a.belt === 'core' && mouthEnergy){
-          posV.x += a.dirX * mouthEnergy * .15;
-          posV.y += a.dirY * mouthEnergy * .15;
+          posV.x += a.dirX * mouthEnergy * .4;
+          posV.y += a.dirY * mouthEnergy * .4;
         }
 
         m.compose(posV, q, scaleV);

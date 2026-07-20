@@ -51,7 +51,8 @@ function generate(seedStr){
   currentSeed = seedStr || Math.random().toString(36).slice(2,9);
   const seedNum = seedFrom(currentSeed);
   reseed(seedNum);
-  $('seed').textContent = currentSeed;
+  // сид больше не дублируется в панели — живёт в хеше урла и в строке fps
+  // внизу (см. loop()).
   location.hash = currentSeed;
 
   const cols = palette();
@@ -65,7 +66,6 @@ function generate(seedStr){
 
   brows = browsLayer.create({ palette: cols, params: {} });
   anchor.add(brows.object3D);
-  $('browPreset').textContent = 'брови: ' + brows.presetName;
 
   crown = crownLayer.create({ palette: cols, params: {} });
   anchor.add(crown.object3D);
@@ -73,12 +73,6 @@ function generate(seedStr){
 
   skin.applyPalette(cols);
   mouth.applyPalette(cols);
-
-  // фаза 4: показать схему зон (skin.zoneScheme обновляется внутри
-  // applyPalette выше) и семейство палитры (palette() кладёт имя схемы
-  // прямо на массив cols, см. palette.js)
-  $('zoneScheme').textContent = 'зоны: ' + skin.zoneScheme;
-  $('paletteFamily').textContent = 'палитра: ' + cols.schemeName;
 }
 
 // пересобрать ТОЛЬКО осколки на текущем сиде с новым density, не трогая
@@ -169,38 +163,13 @@ function doSave(){
   renderGallery();
 }
 
-function doExport(){
-  const json = storage.exportJson();
-  const blob = new Blob([json], { type:'application/json' });
-  const url = URL.createObjectURL(blob);
-  const a = document.createElement('a');
-  a.href = url; a.download = 'streamask-masks.json';
-  a.click();
-  URL.revokeObjectURL(url);
-}
-
-function doImportFile(file){
-  const reader = new FileReader();
-  reader.onload = () => {
-    const res = storage.importJson(reader.result);
-    if (!res.ok){
-      if (res.reason === 'limit') alert(`Импорт добавил бы ${res.incoming} масок к уже сохранённым ${res.current} — лимит ${res.limit}. Удали часть или экспортируй лишнее перед импортом.`);
-      else if (res.reason === 'parse') alert('Файл повреждён — не удалось разобрать JSON.');
-      else if (res.reason === 'shape') alert('Файл не похож на коллекцию streamask (нет поля saved).');
-      else if (res.reason === 'quota') alert('Браузер отказал в месте для сохранения (localStorage переполнен).');
-      else alert('Не удалось импортировать файл.');
-      return;
-    }
-    renderGallery();
-  };
-  reader.readAsText(file);
-}
-
 function renderGallery(){
   const gal = $('gallery');
   gal.innerHTML = '';
   const items = storage.list();
-  $('galleryCount').textContent = `${items.length}/${storage.STORAGE_LIMIT}`;
+  const countText = `${items.length}/${storage.STORAGE_LIMIT}`;
+  $('galleryCount').textContent = countText;
+  $('galleryModalCount').textContent = countText;
   for (const entry of items.slice().reverse()){ // новые сверху
     const el = document.createElement('div');
     el.className = 'thumb';
@@ -221,13 +190,20 @@ function renderGallery(){
     delBtn.onclick = e => { e.stopPropagation(); storage.remove(entry.ts); renderGallery(); };
 
     el.append(img, nameEl, delBtn);
-    el.onclick = () => recall(entry);
+    el.onclick = () => { recall(entry); closeCollection(); };
     el.ondblclick = () => {
       const newName = prompt('Новое имя маски:', entry.name);
       if (newName){ storage.rename(entry.ts, newName); renderGallery(); }
     };
     gal.appendChild(el);
   }
+}
+
+function openCollection(){
+  $('galleryModal').classList.remove('modal-hidden');
+}
+function closeCollection(){
+  $('galleryModal').classList.add('modal-hidden');
 }
 
 /* ────────────────────────── mediapipe ─────────────────────────── */
@@ -293,12 +269,16 @@ function resize(){
 addEventListener('resize', resize);
 
 /* ────────────────────────── состояние панели ──────────────────── */
-let userScale = 1, smoothing = .6;
+let userScale = 1;
 let showSkin = true, showShards = true, showCrown = true, showEyes = true, showBrows = true, showMouth = true;
 // null = слайдер ещё не тронут, слой берёт сгенерированное из сида;
 // как только пользователь двигает слайдер — абсолютное значение здесь,
 // реролл (generate()) его не трогает и не перезаписывает.
 let skinOpacityOverride = null, skinExtensionOverride = null, skinWidthOverride = null, shardDensityOverride = null;
+// множитель на mouthEnergy (единственный потребитель — shards.update, см.
+// loop()) — не оверрайд поверх сгенерированного и не часть сида, просто
+// сила реакции на мимику, дефолт 1.
+let mouthReactionMul = 1;
 
 // заморозка — останавливает ТОЛЬКО генеративную анимацию (шум кожи/рта,
 // спин/пульс осколков), не трекинг лица и не реакцию на мимику (блинки,
@@ -321,8 +301,10 @@ function loop(){
     if(res.faceLandmarks && res.faceLandmarks.length){
       // сглаживаем лендмарки ОДИН раз здесь — все слои ниже (анкер, кожа,
       // рот, глаза, брови) читают этот же массив, лаг между слоями из-за
-      // разных источников/степеней сглаживания физически невозможен.
-      const lms = lmSmoother.update(res.faceLandmarks[0], smoothing);
+      // разных источников/степеней сглаживания физически невозможен. Сила
+      // сглаживания больше не ручная — адаптивная, от скорости движения
+      // лендмарков (см. tracking.js).
+      const lms = lmSmoother.update(res.faceLandmarks[0]);
       tracker.updateAnchor(lms, aspect, anchor, userScale);
       // eyes.js пересчитывает позиции в anchor-local через matrixWorld этим
       // же кадром — без принудительного пересчёта тут читал бы матрицу
@@ -359,7 +341,7 @@ function loop(){
     const t = (now - t0)/1000;
     skin.setTime(t);
     if(mouth) mouth.setFrame(t, jawOpen);
-    if(shards) shards.update({ t, mouthEnergy });
+    if(shards) shards.update({ t, mouthEnergy: mouthEnergy * mouthReactionMul });
   }
 
   renderer.render(scene, camera);
@@ -387,17 +369,22 @@ setupUI({
     else t0 = performance.now() - freezeT*1000;
     return frozen;
   },
-  onSmoothing: v => smoothing = v,
   onScale: v => userScale = v,
   onSkinOpacity: v => { skinOpacityOverride = v; if(skin) skin.setOpacityOverride(v); },
   onSkinExtension: v => { skinExtensionOverride = v; if(skin) skin.setExtensionOverride(v); },
   onSkinWidth: v => { skinWidthOverride = v; if(skin) skin.setWidthExtensionOverride(v); },
   onDensity: v => { shardDensityOverride = v; regenerateShardsOnly(); },
-  onChroma: on => { video.style.display = on ? 'none' : 'block'; },
+  onMouthReaction: v => { mouthReactionMul = v; },
+  // visibility:hidden вместо display:none — видео остаётся в потоке разметки
+  // (тот же размер занимает), не вызывает reflow #wrap/канваса при переключении.
+  onChroma: on => { video.style.visibility = on ? 'hidden' : 'visible'; },
   onSave: () => { pendingSave = true; },
-  onExport: () => doExport(),
-  onImportFile: file => doImportFile(file),
+  onOpenCollection: () => openCollection(),
 });
+
+$('galleryModalBackdrop').onclick = () => closeCollection();
+$('galleryModalClose').onclick = () => closeCollection();
+addEventListener('keydown', e => { if (e.key === 'Escape') closeCollection(); });
 
 /* ────────────────────────── boot ──────────────────────────────── */
 function camError(err){
