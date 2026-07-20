@@ -9,6 +9,7 @@ import * as eyesLayer from './layers/eyes.js';
 import * as browsLayer from './layers/brows.js';
 import * as crownLayer from './layers/crown.js';
 import { setupUI } from './ui.js';
+import * as storage from './storage.js';
 
 const $ = id => document.getElementById(id);
 const video = $('cam'), canvas = $('gl'), statusEl = $('status'), errEl = $('err');
@@ -55,7 +56,7 @@ function generate(seedStr){
 
   const cols = palette();
 
-  shards = shardsLayer.create({ scene, palette: cols, params: {} });
+  shards = shardsLayer.create({ scene, palette: cols, params: { density: shardDensityOverride ?? 1 } });
   anchor.add(shards.object3D);
   shards.object3D.visible = showShards;
 
@@ -72,6 +73,161 @@ function generate(seedStr){
 
   skin.applyPalette(cols);
   mouth.applyPalette(cols);
+
+  // фаза 4: показать схему зон (skin.zoneScheme обновляется внутри
+  // applyPalette выше) и семейство палитры (palette() кладёт имя схемы
+  // прямо на массив cols, см. palette.js)
+  $('zoneScheme').textContent = 'зоны: ' + skin.zoneScheme;
+  $('paletteFamily').textContent = 'палитра: ' + cols.schemeName;
+}
+
+// пересобрать ТОЛЬКО осколки на текущем сиде с новым density, не трогая
+// остальные слои — безопасно, потому что shards.create() тратит одинаковое
+// число случайных чисел независимо от density (см. shards.js), так что
+// позиция в общем rnd после неё не меняется и crown/brows не поедут.
+function regenerateShardsOnly(){
+  if (!shards) return;
+  reseed(seedFrom(currentSeed));
+  const cols = palette();
+  anchor.remove(shards.object3D);
+  shards.dispose();
+  shards = shardsLayer.create({ scene, palette: cols, params: { density: shardDensityOverride ?? 1 } });
+  anchor.add(shards.object3D);
+  shards.object3D.visible = showShards;
+}
+
+/* ────────────────────────── фаза 5: сохранение/рекол ────────────── */
+// Собирает только РУЧНЫЕ оверрайды (не в сид) — всё остальное детерми-
+// нированно восстанавливается из seed при generate(). Пустые (null,
+// нетронутые) слайдеры в объект не попадают — сравни с skin.js/shards.js,
+// где override===null означает "бери сгенерированное".
+function getOverrideParams(){
+  const p = {};
+  if (skinOpacityOverride !== null) p.skinOpacity = skinOpacityOverride;
+  if (skinExtensionOverride !== null) p.skinExtension = skinExtensionOverride;
+  if (skinWidthOverride !== null) p.skinWidth = skinWidthOverride;
+  if (shardDensityOverride !== null) p.density = shardDensityOverride;
+  return p;
+}
+
+// Обратная операция — восстанавливает состояние оверрайдов ИЗ сохранённых
+// параметров (ключей может не быть — тогда конкретный слайдер возвращается
+// в null, "бери сгенерированное", а не остаётся от предыдущей маски).
+function applyOverrideParams(p){
+  skinOpacityOverride = p.skinOpacity ?? null;
+  skinExtensionOverride = p.skinExtension ?? null;
+  skinWidthOverride = p.skinWidth ?? null;
+  shardDensityOverride = p.density ?? null;
+  if (skin){
+    skin.setOpacityOverride(skinOpacityOverride);
+    skin.setExtensionOverride(skinExtensionOverride);
+    skin.setWidthExtensionOverride(skinWidthOverride);
+  }
+  // density применяется через generate() -> shards.create({params:{density}}),
+  // отдельного вызова на существующий объект shards не требуется.
+
+  // слайдеры визуально отражают то, что реально применилось; нетронутые в
+  // сохранённой маске параметры не трогаем — их эффективное значение и так
+  // не зависит от текущего положения бегунка (override===null).
+  if (p.skinOpacity != null) $('skinOpacity').value = p.skinOpacity;
+  if (p.skinExtension != null) $('skinExtension').value = p.skinExtension;
+  if (p.skinWidth != null) $('skinWidth').value = p.skinWidth;
+  if (p.density != null) $('density').value = p.density;
+}
+
+function recall(entry){
+  applyOverrideParams(entry.params || {});
+  generate(entry.seed);
+}
+
+// вызывается из loop() СРАЗУ после renderer.render(), пока буфер WebGL
+// точно валиден — canvas создан без preserveDrawingBuffer, так что
+// toDataURL/drawImage из обработчика клика (вне цикла рендера) рискует
+// поймать уже очищенный браузером буфер вместо текущего кадра.
+let pendingSave = false;
+function captureThumbnail(){
+  const off = document.createElement('canvas');
+  off.width = storage.STORAGE_THUMB_MAX_PX; off.height = storage.STORAGE_THUMB_MAX_PX;
+  const octx = off.getContext('2d');
+  const cw = canvas.width, ch = canvas.height;
+  const side = Math.min(cw, ch) || 1;
+  const sx = (cw-side)/2, sy = (ch-side)/2;
+  octx.drawImage(canvas, sx, sy, side, side, 0, 0, off.width, off.height);
+  return off.toDataURL('image/jpeg', 0.6);
+}
+
+function doSave(){
+  const entry = { seed: currentSeed, name: currentSeed, ts: Date.now(),
+                  thumb: captureThumbnail(), params: getOverrideParams() };
+  const res = storage.add(entry);
+  if (!res.ok){
+    if (res.reason === 'limit') alert(`Достигнут лимит в ${res.limit} масок (сейчас ${res.current}). Удали что-нибудь, чтобы сохранить новую.`);
+    else if (res.reason === 'quota') alert('Браузер отказал в месте для сохранения (localStorage переполнен). Удали несколько масок или экспортируй коллекцию и очисти её.');
+    else alert('Не удалось сохранить маску.');
+    return;
+  }
+  renderGallery();
+}
+
+function doExport(){
+  const json = storage.exportJson();
+  const blob = new Blob([json], { type:'application/json' });
+  const url = URL.createObjectURL(blob);
+  const a = document.createElement('a');
+  a.href = url; a.download = 'streamask-masks.json';
+  a.click();
+  URL.revokeObjectURL(url);
+}
+
+function doImportFile(file){
+  const reader = new FileReader();
+  reader.onload = () => {
+    const res = storage.importJson(reader.result);
+    if (!res.ok){
+      if (res.reason === 'limit') alert(`Импорт добавил бы ${res.incoming} масок к уже сохранённым ${res.current} — лимит ${res.limit}. Удали часть или экспортируй лишнее перед импортом.`);
+      else if (res.reason === 'parse') alert('Файл повреждён — не удалось разобрать JSON.');
+      else if (res.reason === 'shape') alert('Файл не похож на коллекцию streamask (нет поля saved).');
+      else if (res.reason === 'quota') alert('Браузер отказал в месте для сохранения (localStorage переполнен).');
+      else alert('Не удалось импортировать файл.');
+      return;
+    }
+    renderGallery();
+  };
+  reader.readAsText(file);
+}
+
+function renderGallery(){
+  const gal = $('gallery');
+  gal.innerHTML = '';
+  const items = storage.list();
+  $('galleryCount').textContent = `${items.length}/${storage.STORAGE_LIMIT}`;
+  for (const entry of items.slice().reverse()){ // новые сверху
+    const el = document.createElement('div');
+    el.className = 'thumb';
+    el.title = entry.name;
+
+    const img = document.createElement('img');
+    img.src = entry.thumb;
+    img.alt = entry.name;
+
+    const nameEl = document.createElement('div');
+    nameEl.className = 'thumb-name';
+    nameEl.textContent = entry.name;
+
+    const delBtn = document.createElement('button');
+    delBtn.className = 'thumb-del';
+    delBtn.textContent = '×';
+    delBtn.title = 'удалить';
+    delBtn.onclick = e => { e.stopPropagation(); storage.remove(entry.ts); renderGallery(); };
+
+    el.append(img, nameEl, delBtn);
+    el.onclick = () => recall(entry);
+    el.ondblclick = () => {
+      const newName = prompt('Новое имя маски:', entry.name);
+      if (newName){ storage.rename(entry.ts, newName); renderGallery(); }
+    };
+    gal.appendChild(el);
+  }
 }
 
 /* ────────────────────────── mediapipe ─────────────────────────── */
@@ -137,11 +293,19 @@ function resize(){
 addEventListener('resize', resize);
 
 /* ────────────────────────── состояние панели ──────────────────── */
-let userScale = 1, smoothing = .6, showSkin = true, showShards = true, showCrown = true;
+let userScale = 1, smoothing = .6;
+let showSkin = true, showShards = true, showCrown = true, showEyes = true, showBrows = true, showMouth = true;
 // null = слайдер ещё не тронут, слой берёт сгенерированное из сида;
 // как только пользователь двигает слайдер — абсолютное значение здесь,
 // реролл (generate()) его не трогает и не перезаписывает.
-let skinOpacityOverride = null, skinExtensionOverride = null, skinWidthOverride = null;
+let skinOpacityOverride = null, skinExtensionOverride = null, skinWidthOverride = null, shardDensityOverride = null;
+
+// заморозка — останавливает ТОЛЬКО генеративную анимацию (шум кожи/рта,
+// спин/пульс осколков), не трекинг лица и не реакцию на мимику (блинки,
+// брови) — те продолжают отражать твоё текущее состояние. freezeT держит
+// t на момент заморозки; при снятии t0 сдвигается так, чтобы анимация
+// продолжилась без скачка, а не прыгнула вперёд на время паузы.
+let frozen = false, freezeT = 0;
 
 /* ────────────────────────── loop ──────────────────────────────── */
 let lastTs = -1, t0 = performance.now(), frames = 0, fps = 0, fpsT = performance.now();
@@ -166,14 +330,15 @@ function loop(){
       anchor.updateMatrixWorld(true);
       if(showSkin) skin.updateGeometry(lms, aspect);
       if(mouth) mouth.updateGeometry(lms, aspect);
-      // anchor всегда виден, пока лицо трекается — shards/crown управляют
-      // своей видимостью сами (независимые тумблеры). eyes/brows пока без
-      // отдельного тумблера (фаза 4), видны вместе с анкером.
+      // anchor всегда виден, пока лицо трекается — каждый слой управляет
+      // своей видимостью независимым тумблером.
       anchor.visible = true;
       if(skin) skin.object3D.visible = showSkin;
-      if(mouth) mouth.object3D.visible = showSkin;
+      if(mouth) mouth.object3D.visible = showMouth;
       if(shards) shards.object3D.visible = showShards;
       if(crown) crown.object3D.visible = showCrown;
+      if(eyes) eyes.object3D.visible = showEyes;
+      if(brows) brows.object3D.visible = showBrows;
 
       const bs = blend.update(res.faceBlendshapes?.[0]?.categories);
       jawOpen = bs.jawOpen || 0;
@@ -190,12 +355,16 @@ function loop(){
     }
   }
 
-  const t = (now - t0)/1000;
-  skin.setTime(t);
-  if(mouth) mouth.setFrame(t, jawOpen);
-  if(shards) shards.update({ t, mouthEnergy });
+  if (!frozen){
+    const t = (now - t0)/1000;
+    skin.setTime(t);
+    if(mouth) mouth.setFrame(t, jawOpen);
+    if(shards) shards.update({ t, mouthEnergy });
+  }
 
   renderer.render(scene, camera);
+
+  if (pendingSave){ pendingSave = false; doSave(); }
 
   frames++;
   if(now - fpsT > 500){ fps = Math.round(frames*1000/(now-fpsT)); frames=0; fpsT=now;
@@ -209,12 +378,25 @@ setupUI({
   onToggleSkin: () => { showSkin = !showSkin; return showSkin; },
   onToggleShards: () => { showShards = !showShards; return showShards; },
   onToggleCrown: () => { showCrown = !showCrown; return showCrown; },
+  onToggleEyes: () => { showEyes = !showEyes; return showEyes; },
+  onToggleBrows: () => { showBrows = !showBrows; return showBrows; },
+  onToggleMouth: () => { showMouth = !showMouth; return showMouth; },
+  onToggleFreeze: () => {
+    frozen = !frozen;
+    if (frozen) freezeT = (performance.now()-t0)/1000;
+    else t0 = performance.now() - freezeT*1000;
+    return frozen;
+  },
   onSmoothing: v => smoothing = v,
   onScale: v => userScale = v,
   onSkinOpacity: v => { skinOpacityOverride = v; if(skin) skin.setOpacityOverride(v); },
   onSkinExtension: v => { skinExtensionOverride = v; if(skin) skin.setExtensionOverride(v); },
   onSkinWidth: v => { skinWidthOverride = v; if(skin) skin.setWidthExtensionOverride(v); },
+  onDensity: v => { shardDensityOverride = v; regenerateShardsOnly(); },
   onChroma: on => { video.style.display = on ? 'none' : 'block'; },
+  onSave: () => { pendingSave = true; },
+  onExport: () => doExport(),
+  onImportFile: file => doImportFile(file),
 });
 
 /* ────────────────────────── boot ──────────────────────────────── */
@@ -242,6 +424,7 @@ async function start(deviceId){
     started = true;
     await initMP();
     generate(location.hash.slice(1) || undefined);
+    renderGallery();
     statusEl.textContent = 'ok';
     loop();
   } catch(err){

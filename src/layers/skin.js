@@ -17,6 +17,11 @@ import {
 // no-op вне зависимости от режима смешивания, отдельный "активен" не нужен).
 const MAX_LAYERS = 4;
 const BLEND_MODES = ['over','multiply','screen','mask','outline'];
+// фиксированный "нейтральный" цвет для сброса неиспользуемых слотов (id=0
+// значит pattern_plain, m≡0 — сам цвет уже не важен для рендера, но должен
+// быть детерминированным, не оставшимся от предыдущей маски). .copy() при
+// записи в uniform, поэтому один общий объект безопасен.
+const NEUTRAL_ZONE_COLOR = new THREE.Color(1,1,1);
 
 function buildTriangles(){
   const t = FaceLandmarker.FACE_LANDMARKS_TESSELATION;
@@ -401,8 +406,9 @@ export function create(ctx){
     material.uniforms.zoneStyleAngle.value[i] = style.angle;
   }
 
-  return {
+  const api = {
     object3D: mesh,
+    zoneScheme: null, // имя схемы зон (mirror/split/...) — обновляется в applyPalette, для панели (фаза 4)
 
     applyPalette(cols){
       material.uniforms.cA.value.copy(cols[0]);
@@ -428,10 +434,16 @@ export function create(ctx){
           material.uniforms.layerBlend.value[i] = style.blend;
           material.uniforms.layerAngle.value[i] = style.angle;
         } else {
-          // pattern_plain даёт m≡0 — слот полностью no-op, лишние параметры
-          // не важны, но обнуляем для чистоты.
+          // pattern_plain даёт m≡0 — слот полностью no-op для рендера, но
+          // uniform'ы материала переживают между масками (skin создаётся
+          // один раз, applyPalette дальше только перезаписывает поля) —
+          // не обнулить их значило бы оставить цвет/параметры от ПРЕДЫДУЩЕЙ
+          // маски висеть в состоянии до следующего касания этого слота.
+          // Невидимо на рендере (см. выше), но рекол должен воспроизводить
+          // маску по состоянию, а не только по картинке — обнуляем всё.
           material.uniforms.layerId.value[i] = 0;
           material.uniforms.layerParams.value[i].set(0,0,0,0);
+          material.uniforms.layerColor.value[i].set(1,1,1);
           material.uniforms.layerBlend.value[i] = 0;
           material.uniforms.layerAngle.value[i] = 0;
         }
@@ -440,6 +452,7 @@ export function create(ctx){
       // 3c: зоны лица — схема раскладки из сида, стили зон по схеме.
       const scheme = pickScheme(rngLike);
       material.uniforms.scheme.value = SCHEME_IDS[scheme];
+      api.zoneScheme = scheme;
 
       const bandCount = scheme === 'bands' ? RI(6,3) : 4; // 3..5 для bands
       material.uniforms.bandCount.value = bandCount;
@@ -455,6 +468,18 @@ export function create(ctx){
           if (hsl.l > maxL){ maxL = hsl.l; lightest = c; }
         }
         material.uniforms.contourColor.value.copy(pick([darkest, lightest]));
+      }
+
+      // Схемы split/bands/radial заполняют не все 9 слотов (regionId для
+      // них игнорирует zoneId и физически не может выбрать "лишний" слот —
+      // невидимо на рендере), но uniform'ы материала переживают между
+      // масками (skin создаётся один раз) — не сбросить их значило бы
+      // оставить стиль зоны от ПРЕДЫДУЩЕЙ маски висеть немым, но реальным
+      // состоянием до следующего касания слота. Обнуляем ВСЕ 9 заранее
+      // фиксированным нейтральным стилем, не тратя на это rng, дальше
+      // switch ниже перезаписывает только те слоты, что реально использует.
+      for (let i=0;i<ZONE_COUNT;i++){
+        setZoneSlot(i, { id:0, params:[0,0,0,0], color:NEUTRAL_ZONE_COLOR, blend:0, angle:0 });
       }
 
       switch (scheme){
@@ -534,4 +559,5 @@ export function create(ctx){
 
     dispose(){ geometry.dispose(); material.dispose(); scene.remove(mesh); }
   };
+  return api;
 }

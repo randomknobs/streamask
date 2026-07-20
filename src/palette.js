@@ -26,11 +26,16 @@ export function palette(){
                  triad:[0,.333,.666,.166], split:[0,.42,.58,.08], mono:[0,0,0,0] }[scheme];
   const order = shuffle4();
 
-  return offs.map((o,i) => {
+  const cols = offs.map((o,i) => {
     const base = L_LO + order[i]*L_STEP;
     const jitter = R(L_STEP*.4, -L_STEP*.4);
     const l = Math.min(L_HI, Math.max(L_LO, base + jitter));
     const sat = scheme==='mono' ? Math.max(.5, s*(1-i*.15)) : s;
     return new THREE.Color().setHSL((h+o+1)%1, sat, l);
   });
+  // имя схемы для панели (фаза 4) — свойство на массиве, не отдельный
+  // возврат: везде по коду cols используется как обычный массив цветов
+  // (cols[0], .map, pick(cols)...), лишнее свойство этому не мешает.
+  cols.schemeName = scheme;
+  return cols;
 }

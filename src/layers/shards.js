@@ -103,17 +103,36 @@ function gaussian(sigma){
 // Много мелких элементов не тянут по FPS через отдельные Mesh — инстансим
 // InstancedMesh на каждую комбинацию (geometry × пояс плотности × тип материала).
 export function create(ctx){
-  const { palette: cols } = ctx;
+  const { palette: cols, params } = ctx;
+  // density — ручной слайдер (фаза 4), не в сид. Цикл ниже ВСЕГДА проходит
+  // MAX_N итераций и тратит на каждой одинаковый набор R()/RI(), независимо
+  // от density — иначе смена плотности сдвигала бы позицию в общем rnd и
+  // меняла бы внешний вид brows/crown (они читают тот же общий поток ПОСЛЕ
+  // shards в generate()), ломая рекол. density решает только сколько уже
+  // посчитанных слотов реально попадёт в рендер — это усечение результата,
+  // не влияющее на то, сколько случайных чисел было взято из потока.
+  const density = params?.density ?? 1;
 
   const style = pick(['shards','plates','rings','spikes','orbit','grid']);
   const symmetric = R() < .78;
   const asymmetryBias = R(.3, 0);
-  const n = RI(60, 38);
+  const baseN = RI(60, 38);
+  const MAX_N = 120; // baseN(max 60) × density(max 2.0)
+  const targetN = Math.min(MAX_N, Math.round(baseN * density));
 
   const nests = makeNests(RI(7,3), style);
 
+  // Геометрия/материал строятся один раз на уникальный ключ (geomIdx|belt|kind)
+  // и сами тратят R()/RI() (см. GEOMS[i]() и makeGroupMaterial ниже) — если
+  // строить их только для ключей, выживших после усечения по targetN, число
+  // этих вызовов тоже зависело бы от density и снова сдвигало бы общий поток
+  // rnd для слоёв после shards. Поэтому кэш заполняется БЕЗУСЛОВНО при первой
+  // встрече ключа внутри цикла (до проверки i>=targetN) — момент первой
+  // встречи каждого ключа не зависит от density, порядок итераций всегда один.
+  const geomMatCache = new Map(); // key -> { geometry, material }
+
   const slots = [];
-  for (let i=0;i<n;i++){
+  for (let i=0;i<MAX_N;i++){
     const geomIdx = style==='rings' ? 4 : style==='spikes' ? 5 : RI(GEOMS.length);
 
     let px, py;
@@ -142,10 +161,20 @@ export function create(ctx){
     const mouthK = R()<.35 ? 0 : R(.8,0);
     const mouthInvert = R()<.25;
     const key = geomIdx + '|' + belt + '|' + kind;
+    if (!geomMatCache.has(key)){
+      geomMatCache.set(key, { geometry: GEOMS[geomIdx](), material: makeGroupMaterial(kind, belt, cols) });
+    }
+
+    // R() ниже тратится по тому же условию, что и раньше (symmetric && |px|>.08),
+    // ДО отсечки по targetN — иначе четверть кадров теряла бы этот draw и
+    // все последующие слои поехали бы вбок при смене density.
+    const mirror = symmetric && Math.abs(px) > .08 && R() >= asymmetryBias;
+
+    if (i >= targetN) continue;
 
     slots.push({ key, geomIdx, belt, kind, px, py, pz, rot, spin, pulse, ph, scale, color, mouthK, mouthInvert });
 
-    if (symmetric && Math.abs(px) > .08 && R() >= asymmetryBias){
+    if (mirror){
       slots.push({
         key, geomIdx, belt, kind, px:-px, py, pz,
         rot:{ x:rot.x, y:-rot.y, z:-rot.z },
@@ -161,14 +190,22 @@ export function create(ctx){
     groups.get(slot.key).push(slot);
   }
 
+  // geomMatCache безусловно завёл запись для КАЖДОГО встреченного ключа (не
+  // зависящее от density требование, см. выше) — при агрессивном усечении
+  // (низкий density) часть ключей могла не набрать ни одного слота и не
+  // попасть в groups. Их геометрию/материал явно освобождаем, иначе они
+  // остаются висеть неиспользуемыми (не в сцене, не в group.traverse()
+  // из dispose() ниже — их бы никто не подчистил).
+  for (const [key, { geometry, material }] of geomMatCache){
+    if (!groups.has(key)){ geometry.dispose(); material.dispose(); }
+  }
+
   const group = new THREE.Group();
   const anim = [];
   const m = new THREE.Matrix4(), q = new THREE.Quaternion();
 
   for (const items of groups.values()){
-    const { geomIdx, belt, kind } = items[0];
-    const geometry = GEOMS[geomIdx]();
-    const material = makeGroupMaterial(kind, belt, cols);
+    const { geometry, material } = geomMatCache.get(items[0].key);
     const imesh = new THREE.InstancedMesh(geometry, material, items.length);
     imesh.frustumCulled = false;
 
