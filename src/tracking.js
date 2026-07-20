@@ -17,6 +17,21 @@ const MOTION_HIGH = 0.05;
 const LERP_MIN = 0.06;
 const LERP_MAX = 0.92;
 
+// ─── адаптивное сглаживание blendshapes (см. createBlendshapeSmoother) ────
+// Та же схема, что у лендмарков выше, но по скорости изменения score
+// отдельно на каждую категорию (blendshapes — скаляры 0..1, а не точки в
+// видео-пространстве, отсюда свои пороги). Раньше EMA была фиксированной
+// (.35) — при быстрой мимике (жевание) это давало заметное отставание и
+// срезанную амплитуду ПОВЕРХ уже сглаженных лендмарков (двойное
+// сглаживание). BLEND_MOTION_LOW/HIGH — границы |raw-smoothed| за кадр,
+// BLEND_LERP_MIN/MAX — соответствующие коэффициенты; подобраны так, чтобы
+// 5 Гц колебание с амплитудой 0.3 (жевание) сохраняло ≥70% амплитуды на
+// выходе (см. verify в scratchpad).
+const BLEND_MOTION_LOW = 0.01;
+const BLEND_MOTION_HIGH = 0.08;
+const BLEND_LERP_MIN = 0.15;
+const BLEND_LERP_MAX = 0.95;
+
 export async function loadLandmarker(){
   const fileset = await FilesetResolver.forVisionTasks(
     'https://cdn.jsdelivr.net/npm/@mediapipe/tasks-vision@0.10.12/wasm');
@@ -53,9 +68,16 @@ export function toWorld(lm, aspect, out){
 // — в начале файла).
 function smoothstep01(t){ return t*t*(3-2*t); }
 
+// низкий/высокий порог величины движения -> коэффициент лерпа min/max по
+// smoothstep-кривой между ними. Общая форма для лендмарков и blendshapes,
+// каждый вызывающий код передаёт свои константы.
+function adaptiveLerp(value, low, high, min, max){
+  const t = Math.min(1, Math.max(0, (value - low) / (high - low)));
+  return min + (max - min) * smoothstep01(t);
+}
+
 function adaptiveLerpK(avgDisplacement){
-  const t = Math.min(1, Math.max(0, (avgDisplacement - MOTION_LOW) / (MOTION_HIGH - MOTION_LOW)));
-  return LERP_MIN + (LERP_MAX - LERP_MIN) * smoothstep01(t);
+  return adaptiveLerp(avgDisplacement, MOTION_LOW, MOTION_HIGH, LERP_MIN, LERP_MAX);
 }
 
 export function createLandmarkSmoother(){
@@ -122,7 +144,11 @@ export function createFaceTracker(){
   };
 }
 
-// экспоненциальное сглаживание блендшейпов по имени категории — иначе дрожит.
+// адаптивное сглаживание блендшейпов по имени категории — иначе дрожит.
+// Коэффициент считается отдельно на каждую категорию от скорости её
+// изменения между кадрами (сырое значение относительно уже сглаженного —
+// как и для лендмарков), а не фиксированной EMA: медленная мимика
+// сглаживается как раньше, быстрая (жевание) проходит почти без лага.
 // Возвращает один и тот же объект каждый кадр (мутируется на месте).
 export function createBlendshapeSmoother(){
   const smoothed = {};
@@ -131,7 +157,9 @@ export function createBlendshapeSmoother(){
       if (categories){
         for (const cat of categories){
           const prev = smoothed[cat.categoryName] ?? cat.score;
-          smoothed[cat.categoryName] = prev + (cat.score - prev) * .35;
+          const k = adaptiveLerp(Math.abs(cat.score - prev),
+            BLEND_MOTION_LOW, BLEND_MOTION_HIGH, BLEND_LERP_MIN, BLEND_LERP_MAX);
+          smoothed[cat.categoryName] = prev + (cat.score - prev) * k;
         }
       }
       return smoothed;

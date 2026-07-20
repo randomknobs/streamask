@@ -45,7 +45,7 @@ export function create(ctx){
         c = min(c*1.4, vec3(1.0));
         float flash = hash(vec2(frame, 7.0));
         if (flash > 0.97) c = vec3(1.0);
-        float alpha = smoothstep(0.06, 0.35, jawOpen);
+        float alpha = smoothstep(0.02, 0.20, jawOpen);
         gl_FragColor = vec4(c, alpha);
       }`
   });

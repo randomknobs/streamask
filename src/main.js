@@ -515,7 +515,12 @@ function loop(){
 
       const bs = blend.update(res.faceBlendshapes?.[0]?.categories);
       jawOpen = bs.jawOpen || 0;
-      mouthEnergy = jawOpen*.7 + (bs.mouthFunnel||0)*.2 + (bs.mouthPucker||0)*.1;
+      // жевание — это не только jawOpen: боковое движение челюсти/губ бьёт
+      // в mouthLeft/mouthRight и jawLeft/jawRight, их не было в формуле и
+      // жевание почти не давало энергии, только открывание рта.
+      mouthEnergy = jawOpen*.5 + (bs.mouthFunnel||0)*.15 + (bs.mouthPucker||0)*.1
+        + ((bs.mouthLeft||0)+(bs.mouthRight||0))*.15
+        + ((bs.jawLeft||0)+(bs.jawRight||0))*.15;
       if(eyes) eyes.updateGeometry(lms, aspect, anchor, bs.eyeBlinkRight||0, bs.eyeBlinkLeft||0, jawOpen);
       if(brows){
         brows.updateGeometry(lms, aspect, anchor);
