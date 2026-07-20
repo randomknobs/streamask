@@ -3,6 +3,7 @@ import { FaceLandmarker } from
   'https://cdn.jsdelivr.net/npm/@mediapipe/tasks-vision@0.10.12/vision_bundle.mjs';
 import { R } from '../rng.js';
 import { toWorld } from '../tracking.js';
+import { CANONICAL_UV } from '../uv.js';
 
 function buildTriangles(){
   const t = FaceLandmarker.FACE_LANDMARKS_TESSELATION;
@@ -106,7 +107,12 @@ export function create(ctx){
 
   const geometry = new THREE.BufferGeometry();
   geometry.setAttribute('position', new THREE.BufferAttribute(new Float32Array(TOTAL_VERTS*3),3));
-  geometry.setAttribute('uv', new THREE.BufferAttribute(new Float32Array(TOTAL_VERTS*2),2));
+  const uvAttr = new THREE.BufferAttribute(new Float32Array(TOTAL_VERTS*2),2);
+  // UV лица (0..467) — статичные, из канонической модели, проставляются один
+  // раз. Живые лендмарки для UV не используются: они плывут при повороте
+  // головы, и любой регулярный паттерн на коже поехал бы вместе с ними.
+  uvAttr.array.set(CANONICAL_UV, 0);
+  geometry.setAttribute('uv', uvAttr);
   geometry.setIndex(new THREE.BufferAttribute(buildFullIndices(),1));
 
   const mesh = new THREE.Mesh(geometry, material);
@@ -239,11 +245,9 @@ export function create(ctx){
 
     updateGeometry(landmarks, aspect){
       const pos = geometry.attributes.position.array;
-      const uv  = geometry.attributes.uv.array;
       for (let i=0;i<468;i++){
         toWorld(landmarks[i], aspect, v);
         pos[i*3]=v.x; pos[i*3+1]=v.y; pos[i*3+2]=v.z + .002;
-        uv[i*2]=landmarks[i].x; uv[i*2+1]=1-landmarks[i].y;
       }
       applyExtension(landmarks, aspect);
       geometry.attributes.position.needsUpdate = true;
