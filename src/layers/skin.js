@@ -188,15 +188,27 @@ export function create(ctx){
 
   // extension = genExtension (из сида) × extensionMultiplier (ручной слайдер,
   // в сид не пишется) — тот же паттерн, что и с непрозрачностью.
+  // widthExtension — независимый параметр той же формы: своя генерация из
+  // сида, свой ручной множитель. Не должен пересекаться с extension: рост
+  // вдоль ay (вертикаль) зависит только от ext, рост вдоль ax (латераль)
+  // только от wext — см. applyExtension.
   let genExtension = 0, extensionMultiplier = 1;
+  let genWidthExtension = 0, widthExtensionMultiplier = 1;
 
   // рабочие векторы для расширения — переиспользуются каждый кадр, без
   // аллокаций в цикле по 36×4 вершинам.
   const tmpEyeR = new THREE.Vector3(), tmpEyeL = new THREE.Vector3();
   const tmpFore = new THREE.Vector3(), tmpChin = new THREE.Vector3();
   const ax = new THREE.Vector3(), ay = new THREE.Vector3(), az = new THREE.Vector3();
+  // ax не гарантированно ортогонален ay (оба берутся из независимых пар
+  // лендмарков) — axOrtho переортогонализует латеральную ось через
+  // cross(ay,az) так, чтобы {axOrtho, ay, az} был точным ортонормированным
+  // базисом. Без этого разложение offset на три оси теряет часть длины в
+  // остатке и вертикаль/латераль/глубина перестают быть независимыми.
+  const axOrtho = new THREE.Vector3();
   const centroid = new THREE.Vector3(), ovalPos = new THREE.Vector3(), offset = new THREE.Vector3();
-  const vertVec = new THREE.Vector3(), horizVec = new THREE.Vector3(), newPos = new THREE.Vector3();
+  const vertVec = new THREE.Vector3(), lateralVec = new THREE.Vector3(), depthVec = new THREE.Vector3();
+  const newPos = new THREE.Vector3();
   const uvCentroid = { x:0, y:0 };
 
   // Рост неравномерный по кольцу: сильно вверх (лоб/виски), почти не растём
@@ -205,14 +217,18 @@ export function create(ctx){
   // рост получается сам, без отдельного случая.
   const GROWTH_CHIN = .1, GROWTH_TOP = 1.1;
   const OUT_SCALE = .9, BACK_SCALE = .55;
-  // офсет от центроида раскладывается на вертикальную (вдоль ay) и
-  // горизонтальную (остаток) составляющие. growth применяется ТОЛЬКО к
-  // вертикальной — иначе на уровне глаз/скул/подбородка, где офсет почти
-  // целиком горизонтальный, рост "по вертикали" фактически толкал точку
-  // вбок и раздувал лицо в ширину. Горизонтальная растёт максимум на 5%
-  // (HORIZ_CAP) при ext=1 на самом дальнем кольце — контур на этом уровне
-  // остаётся практически там же, где и исходный овал, при любом extension.
-  const HORIZ_CAP = .05;
+  // Латеральный рост (ширина) зависит ТОЛЬКО от wext, никогда от ext — иначе
+  // слайдер удлинения снова начал бы раздувать лицо вбок, как до фикса.
+  // На wext=1 самое дальнее кольцо расширяется на 70% от исходного офсета —
+  // калибровка на глаз (лендмарков ушей MediaPipe не даёт), докручивается
+  // пользователем через слайдер.
+  const WIDTH_LATERAL_SCALE = .7;
+  // Уши торчат вбок И вперёд относительно линии скул — плоское расширение
+  // пройдёт перед ними. WIDTH_BACK_SCALE толкает вбок растущие точки назад
+  // по -az пропорционально их "латеральности" (offset.dot(axOrtho)/offLen):
+  // у носа/подбородка/лба латеральность ~0 и заворота почти нет, у скул/
+  // висков — максимальная, там и нужно обогнуть ухо.
+  const WIDTH_BACK_SCALE = .9;
   // "назад" = -az. az строится тем же cross(ax,ay), что и анкер в tracking.js,
   // и там +Z (тот же az) — направление "к камере" (осколки летят на +pz,
   // это подтверждённое рабочее поведение). Значит "обратно, вокруг черепа,
@@ -223,6 +239,7 @@ export function create(ctx){
     const pos = geometry.attributes.position.array;
     const uv  = geometry.attributes.uv.array;
     const ext = genExtension * extensionMultiplier;
+    const wext = genWidthExtension * widthExtensionMultiplier;
 
     toWorld(landmarks[33], aspect, tmpEyeR);
     toWorld(landmarks[263], aspect, tmpEyeL);
@@ -231,6 +248,7 @@ export function create(ctx){
     ax.copy(tmpEyeL).sub(tmpEyeR).normalize();
     ay.copy(tmpFore).sub(tmpChin).normalize();
     az.crossVectors(ax, ay).normalize();
+    axOrtho.crossVectors(ay, az).normalize();
 
     centroid.set(0,0,0);
     for (const oi of OVAL_RING) centroid.set(centroid.x+pos[oi*3], centroid.y+pos[oi*3+1], centroid.z+pos[oi*3+2]);
@@ -247,10 +265,14 @@ export function create(ctx){
 
       const offLen = offset.length();
       const vertScalar = offset.dot(ay);
+      const lateralScalar = offset.dot(axOrtho);
+      const depthScalar = offset.dot(az);
       vertVec.copy(ay).multiplyScalar(vertScalar);
-      horizVec.subVectors(offset, vertVec);
+      lateralVec.copy(axOrtho).multiplyScalar(lateralScalar);
+      depthVec.copy(az).multiplyScalar(depthScalar);
 
-      const vert = offLen > 1e-6 ? vertScalar/offLen : 0; // -1 подбородок .. +1 макушка/виски
+      const vert = offLen > 1e-6 ? vertScalar/offLen : 0;    // -1 подбородок .. +1 макушка/виски
+      const lateral = offLen > 1e-6 ? lateralScalar/offLen : 0; // -1..+1, максимум по модулю у скул/висков
       const t = (vert+1)/2;
       const growth = THREE.MathUtils.lerp(GROWTH_CHIN, GROWTH_TOP, t);
 
@@ -259,19 +281,21 @@ export function create(ctx){
       for (let r=0;r<RING_COUNT;r++){
         const k = (r+1)/RING_COUNT;
         const vertGrowthAmt = ext*growth*k*OUT_SCALE;
-        const horizMult = 1 + HORIZ_CAP*ext*k;
         const backAmt = ext*growth*k*BACK_SCALE*BACKWARD_SIGN;
+        const lateralMult = 1 + WIDTH_LATERAL_SCALE*wext*k;
+        const widthBackAmt = wext*Math.abs(lateral)*k*WIDTH_BACK_SCALE*BACKWARD_SIGN;
 
         newPos.copy(centroid)
           .addScaledVector(vertVec, 1+vertGrowthAmt)
-          .addScaledVector(horizVec, horizMult)
-          .addScaledVector(az, backAmt);
+          .addScaledVector(lateralVec, lateralMult)
+          .add(depthVec)
+          .addScaledVector(az, backAmt+widthBackAmt);
 
         const vi = extVertexIndex(r, i);
         pos[vi*3]=newPos.x; pos[vi*3+1]=newPos.y; pos[vi*3+2]=newPos.z;
-        // UV той же логикой: вертикаль (Y) тянется вместе с ростом вверх,
-        // горизонталь (X) почти не меняется — та же причина, что и с 3D.
-        uv[vi*2] = uvCentroid.x + ou*horizMult;
+        // UV не кодирует глубину — горизонталь тянется тем же lateralMult,
+        // что и 3D-латераль, вертикаль тем же vertGrowthAmt, что и 3D-ay.
+        uv[vi*2] = uvCentroid.x + ou*lateralMult;
         uv[vi*2+1] = uvCentroid.y + ov*(1+vertGrowthAmt);
       }
     }
@@ -290,6 +314,7 @@ export function create(ctx){
       material.uniforms.spd.value = R(.8,.05);
       genOp = R(.98,.86);
       genExtension = R(1,0);
+      genWidthExtension = R(1,0);
       applyOpacity();
 
       const rngLike = { R, RI, pick };
@@ -316,6 +341,7 @@ export function create(ctx){
 
     setOpacityMultiplier(mult){ opacityMultiplier = mult; applyOpacity(); },
     setExtensionMultiplier(mult){ extensionMultiplier = mult; },
+    setWidthExtensionMultiplier(mult){ widthExtensionMultiplier = mult; },
 
     updateGeometry(landmarks, aspect){
       const pos = geometry.attributes.position.array;
