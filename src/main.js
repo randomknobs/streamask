@@ -10,7 +10,7 @@ import * as browsLayer from './layers/brows.js';
 import * as crownLayer from './layers/crown.js';
 import { setupUI } from './ui.js';
 import * as storage from './storage.js';
-import { createRecorder, dataUrlToBlobSync } from './record.js';
+import { createRecorder, dataUrlToBlobSync, extensionForMime } from './record.js';
 
 const $ = id => document.getElementById(id);
 const video = $('cam'), canvas = $('gl'), statusEl = $('status'), errEl = $('err');
@@ -224,20 +224,6 @@ function downloadBlob(blob, filename){
   URL.revokeObjectURL(url);
 }
 
-// canShare — проверяем ИМЕННО через canShare({files}), не по user-agent
-// (спека прямо это требует: десктопный Chrome файлы не поддерживает,
-// мобильные и Safari на macOS — да, и это не всегда совпадает с тем, что
-// можно было бы угадать по UA).
-function canShareFiles(mimeType){
-  try { return !!navigator.canShare?.({ files:[new File([], 'probe', { type:mimeType })] }); }
-  catch(e){ return false; }
-}
-
-function updateShareButtonLabel(){
-  const mime = recorder.lastBlob ? (recorder.lastMime || 'video/webm') : 'image/png';
-  $('share').textContent = canShareFiles(mime) ? 'share' : 'download';
-}
-
 let micStreamForRecording = null;
 
 async function toggleRecording(){
@@ -266,8 +252,9 @@ async function toggleRecording(){
       $('recStatus').style.display = 'none';
       $('record').classList.remove('on');
       $('record').textContent = '● record (V)';
+      $('recFormatNote').style.display = 'none';
       if (micStreamForRecording){ micStreamForRecording.getTracks().forEach(t=>t.stop()); micStreamForRecording = null; }
-      downloadBlob(blob, `streamask-${currentSeed}-${Date.now()}.webm`);
+      downloadBlob(blob, `streamask-${currentSeed}-${Date.now()}.${extensionForMime(mime)}`);
       updateShareButtonLabel();
     },
     onWarnLong: () => alert('Recording has passed 10 minutes - consider stopping soon, long recordings use a lot of memory.'),
@@ -283,23 +270,60 @@ async function toggleRecording(){
   $('recTimer').textContent = '00:00';
   $('record').classList.add('on');
   $('record').textContent = '● stop (V)';
+  if (recorder.usingMp4Fallback){
+    $('recFormatNote').textContent = 'mp4 not supported here — recording webm instead';
+    $('recFormatNote').style.display = 'block';
+  }
   if (recorder.transparentFallbackActive){
     alert("This browser's encoder does not support a transparent background - recording on a green background instead.");
   }
 }
 
+// Держим готовый PNG-снимок ПОСЛЕДНЕГО кадра заранее (обновляется здесь, в
+// фоне, throttled), а не готовим его в обработчике клика share — раньше
+// doShare делал canvas.toDataURL + декодирование base64 ПОСЛЕ клика, и хотя
+// сам по себе этот путь синхронный (без await), в реальных браузерах этого
+// оказалось достаточно, чтобы потерять transient activation клика и словить
+// NotAllowedError на navigator.share(). Теперь клик не делает вообще ничего,
+// кроме чтения уже готового File и вызова share().
+let latestSnapshotFile = null;
+let lastSnapshotRefreshTs = 0;
+const SNAPSHOT_REFRESH_MS = 1000;
+
+function refreshLatestSnapshot(){
+  const dataUrl = recorder.snapshotDataUrl({ transparent: $('transparentToggle').checked });
+  const blob = dataUrlToBlobSync(dataUrl);
+  latestSnapshotFile = new File([blob], `streamask-${currentSeed}.png`, { type:'image/png' });
+}
+
+// canShare — проверяем ИМЕННО через canShare({files}), не по user-agent
+// (десктопный Chrome файлы не поддерживает вовсе, мобильные и Safari на
+// macOS — да, и это не всегда совпадает с тем, что можно было бы угадать
+// по UA).
+function canShareFiles(mimeType){
+  try { return !!navigator.canShare?.({ files:[new File([], 'probe', { type:mimeType })] }); }
+  catch(e){ return false; }
+}
+
+function updateShareButtonLabel(){
+  const mime = recorder.lastBlob ? (recorder.lastMime || 'video/webm') : 'image/png';
+  $('share').textContent = canShareFiles(mime) ? 'share' : 'download';
+}
+
 // navigator.share() обязан вызываться синхронно из обработчика реального
-// клика, без await до самого вызова - иначе часть браузеров тихо отклоняет
-// его как не идущий от жеста пользователя. Всё до await ниже (File(...),
-// dataUrlToBlobSync) синхронно; await стоит только НА САМОМ share().
+// клика, без единого await до самого вызова — иначе браузер тихо отклоняет
+// его как не идущий от жеста пользователя. file здесь уже готов заранее
+// (см. refreshLatestSnapshot/onStop), само тело функции не делает ничего
+// асинхронного до share().
 function doShare(){
-  let file;
-  if (recorder.lastBlob){
-    file = new File([recorder.lastBlob], `streamask-${currentSeed}.webm`, { type: recorder.lastMime || 'video/webm' });
-  } else {
-    const dataUrl = recorder.snapshotDataUrl({ transparent: $('transparentToggle').checked });
-    const blob = dataUrlToBlobSync(dataUrl);
-    file = new File([blob], `streamask-${currentSeed}.png`, { type:'image/png' });
+  const file = recorder.lastBlob
+    ? new File([recorder.lastBlob], `streamask-${currentSeed}.${extensionForMime(recorder.lastMime)}`,
+                { type: recorder.lastMime || 'video/webm' })
+    : latestSnapshotFile;
+
+  if (!file){
+    alert('No frame ready yet - try again in a moment.');
+    return;
   }
 
   const shareText = `seed: ${currentSeed}\nhttps://randomknobs.github.io/streamask/#${currentSeed}`;
@@ -454,6 +478,14 @@ function loop(){
   renderer.render(scene, camera);
 
   if (pendingSave){ pendingSave = false; doSave(); }
+
+  // не во время записи: recorder уже сам гонит композит на rVFC, и
+  // snapshotDataUrl() тут перезаписал бы transparentSupported, вычисленный
+  // под ИДУЩУЮ запись (см. record.js) — сломал бы фолбэк на зелёный фон.
+  if (!recorder.isRecording && now - lastSnapshotRefreshTs > SNAPSHOT_REFRESH_MS){
+    lastSnapshotRefreshTs = now;
+    refreshLatestSnapshot();
+  }
 
   frames++;
   if(now - fpsT > 500){ fps = Math.round(frames*1000/(now-fpsT)); frames=0; fpsT=now;

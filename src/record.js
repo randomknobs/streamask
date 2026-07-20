@@ -8,11 +8,20 @@ const BITRATE = 8_000_000;
 const CHUNK_INTERVAL_MS = 1000; // чанки по 1с — не копим всю запись одним Blob в памяти
 const LONG_RECORDING_WARN_MS = 10 * 60 * 1000;
 
+// mp4 сначала — многие приложения (в т.ч. на телефонах) не принимают webm
+// для шаринга, а isTypeSupported честно скажет, поддерживает ли браузер
+// конкретную комбинацию контейнер+кодек, гадать не нужно.
 const VIDEO_MIME_CANDIDATES = [
+  'video/mp4;codecs=avc1.42E01E,mp4a.40.2',
+  'video/mp4;codecs=avc1',
+  'video/mp4',
   'video/webm;codecs=vp9',
-  'video/webm;codecs=vp8',
   'video/webm',
 ];
+
+export function extensionForMime(mime){
+  return mime && mime.startsWith('video/mp4') ? 'mp4' : 'webm';
+}
 // поддержка альфы у VP9 в MediaRecorder — не везде и на момент написания
 // практически нигде в вебе; isTypeSupported сам скажет правду для
 // конкретного браузера, кода на глаз не угадываем.
@@ -191,6 +200,9 @@ export function createRecorder({ video, glCanvas }){
   return {
     get isRecording(){ return mediaRecorder !== null; },
     get transparentFallbackActive(){ return transparentMode && !transparentSupported; },
+    // true, когда реально идущая/только что законченная запись НЕ mp4 —
+    // т.е. mp4 не нашёлся в isTypeSupported и сработал фолбэк на webm.
+    get usingMp4Fallback(){ return !!lastMime && !lastMime.startsWith('video/mp4'); },
     get lastBlob(){ return lastBlob; },
     get lastMime(){ return lastMime; },
     get outCanvas(){ return out; },
