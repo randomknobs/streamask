@@ -11,6 +11,68 @@ function buildTriangles(){
   return new Uint16Array(idx);
 }
 
+// FACE_LANDMARKS_FACE_OVAL — несвязный список рёбер {start,end}, не готовое
+// кольцо (тот же случай, что и с контуром губ в mouth.js). Граф — простой
+// цикл (у каждой вершины ровно 2 соседа, проверено в node), поэтому
+// достаточно пройти по смежности от произвольной стартовой точки.
+function orderRing(edges){
+  const adj = new Map();
+  for (const {start, end} of edges){
+    if (!adj.has(start)) adj.set(start, []);
+    if (!adj.has(end)) adj.set(end, []);
+    adj.get(start).push(end);
+    adj.get(end).push(start);
+  }
+  const startNode = edges[0].start;
+  const ring = [startNode];
+  let prev = -1, cur = startNode;
+  while (true){
+    const neighbors = adj.get(cur);
+    const next = neighbors[0] === prev ? neighbors[1] : neighbors[0];
+    if (next === startNode) break;
+    ring.push(next);
+    prev = cur; cur = next;
+  }
+  return ring;
+}
+
+const OVAL_RING = orderRing(FaceLandmarker.FACE_LANDMARKS_FACE_OVAL);
+const OVAL_N = OVAL_RING.length; // 36
+// Фиксировано (не из сида): число колец меняет размер буферов, а меш кожи
+// живёт постоянно и не пересоздаётся между масками (см. комментарий ниже) —
+// сид управляет только СИЛОЙ удлинения (genExtension), не топологией.
+const RING_COUNT = 4;
+const EXT_VERTEX_START = 468; // после исходных 468 лендмарков лица.
+// Слоты 468-477 раньше просто копировали ирисы (468..477 из живых
+// лендмарков) в буфер, но индексный буфер их никогда не использовал —
+// тесселяция ссылается только на 0..467. Так что это место было мёртвым,
+// теперь тут наши собственные вершины удлинения.
+const EXT_VERTEX_COUNT = OVAL_N * RING_COUNT;
+const TOTAL_VERTS = EXT_VERTEX_START + EXT_VERTEX_COUNT;
+
+function extVertexIndex(ringIdx, i){ return EXT_VERTEX_START + ringIdx*OVAL_N + i; }
+
+// Треугольники полосы между двумя кольцами одинаковой длины (a[i]..b[i]).
+// Порядок вершин подобран так, чтобы нормаль смотрела наружу от центра лица
+// (проверено в node — см. итоговое сообщение по фазе).
+function stripIndices(idxOut, ringA, ringB, n){
+  for (let i=0;i<n;i++){
+    const a0 = ringA(i), a1 = ringA((i+1)%n);
+    const b0 = ringB(i), b1 = ringB((i+1)%n);
+    idxOut.push(a0, b0, a1);
+    idxOut.push(a1, b0, b1);
+  }
+}
+
+function buildFullIndices(){
+  const idx = Array.from(buildTriangles());
+  stripIndices(idx, i => OVAL_RING[i], i => extVertexIndex(0,i), OVAL_N);
+  for (let r=0;r<RING_COUNT-1;r++){
+    stripIndices(idx, i => extVertexIndex(r,i), i => extVertexIndex(r+1,i), OVAL_N);
+  }
+  return new Uint16Array(idx);
+}
+
 // меш «кожи» живёт всё время работы приложения — тесселяция и UV из живых
 // лендмарков не пересоздаются между масками, реролл только перекрашивает
 // материал (см. applyPalette). Так сохраняется поведение до рефакторинга.
@@ -43,9 +105,9 @@ export function create(ctx){
   });
 
   const geometry = new THREE.BufferGeometry();
-  geometry.setAttribute('position', new THREE.BufferAttribute(new Float32Array(478*3),3));
-  geometry.setAttribute('uv', new THREE.BufferAttribute(new Float32Array(478*2),2));
-  geometry.setIndex(new THREE.BufferAttribute(buildTriangles(),1));
+  geometry.setAttribute('position', new THREE.BufferAttribute(new Float32Array(TOTAL_VERTS*3),3));
+  geometry.setAttribute('uv', new THREE.BufferAttribute(new Float32Array(TOTAL_VERTS*2),2));
+  geometry.setIndex(new THREE.BufferAttribute(buildFullIndices(),1));
 
   const mesh = new THREE.Mesh(geometry, material);
   mesh.frustumCulled = false;
@@ -65,6 +127,79 @@ export function create(ctx){
     material.depthWrite = opaque;
   }
 
+  // extension = genExtension (из сида) × extensionMultiplier (ручной слайдер,
+  // в сид не пишется) — тот же паттерн, что и с непрозрачностью.
+  let genExtension = 0, extensionMultiplier = 1;
+
+  // рабочие векторы для расширения — переиспользуются каждый кадр, без
+  // аллокаций в цикле по 36×4 вершинам.
+  const tmpEyeR = new THREE.Vector3(), tmpEyeL = new THREE.Vector3();
+  const tmpFore = new THREE.Vector3(), tmpChin = new THREE.Vector3();
+  const ax = new THREE.Vector3(), ay = new THREE.Vector3(), az = new THREE.Vector3();
+  const centroid = new THREE.Vector3(), ovalPos = new THREE.Vector3(), offset = new THREE.Vector3();
+  const newPos = new THREE.Vector3();
+  const uvCentroid = { x:0, y:0 };
+
+  // Рост неравномерный по кольцу: сильно вверх (лоб/виски), почти не растём
+  // у подбородка. verticality — проекция офсета от центроида на ay (-1
+  // подбородок, +1 макушка/виски), по бокам она естественно ~0 — средний
+  // рост получается сам, без отдельного случая.
+  const GROWTH_CHIN = .1, GROWTH_TOP = 1.1;
+  const OUT_SCALE = .9, BACK_SCALE = .55;
+  // "назад" = -az. az строится тем же cross(ax,ay), что и анкер в tracking.js,
+  // и там +Z (тот же az) — направление "к камере" (осколки летят на +pz,
+  // это подтверждённое рабочее поведение). Значит "обратно, вокруг черепа,
+  // от камеры" — это -az.
+  const BACKWARD_SIGN = -1;
+  const UV_EXTRAPOLATE_SCALE = 1;
+
+  function applyExtension(landmarks, aspect){
+    const pos = geometry.attributes.position.array;
+    const uv  = geometry.attributes.uv.array;
+    const ext = genExtension * extensionMultiplier;
+
+    toWorld(landmarks[33], aspect, tmpEyeR);
+    toWorld(landmarks[263], aspect, tmpEyeL);
+    toWorld(landmarks[10], aspect, tmpFore);
+    toWorld(landmarks[152], aspect, tmpChin);
+    ax.copy(tmpEyeL).sub(tmpEyeR).normalize();
+    ay.copy(tmpFore).sub(tmpChin).normalize();
+    az.crossVectors(ax, ay).normalize();
+
+    centroid.set(0,0,0);
+    for (const oi of OVAL_RING) centroid.set(centroid.x+pos[oi*3], centroid.y+pos[oi*3+1], centroid.z+pos[oi*3+2]);
+    centroid.multiplyScalar(1/OVAL_N);
+
+    uvCentroid.x = 0; uvCentroid.y = 0;
+    for (const oi of OVAL_RING){ uvCentroid.x += uv[oi*2]; uvCentroid.y += uv[oi*2+1]; }
+    uvCentroid.x /= OVAL_N; uvCentroid.y /= OVAL_N;
+
+    for (let i=0;i<OVAL_N;i++){
+      const oi = OVAL_RING[i];
+      ovalPos.set(pos[oi*3], pos[oi*3+1], pos[oi*3+2]);
+      offset.subVectors(ovalPos, centroid);
+
+      const vert = offset.length() > 1e-6 ? offset.dot(ay)/offset.length() : 0;
+      const t = (vert+1)/2;
+      const growth = THREE.MathUtils.lerp(GROWTH_CHIN, GROWTH_TOP, t);
+
+      const ou = uv[oi*2] - uvCentroid.x, ov = uv[oi*2+1] - uvCentroid.y;
+
+      for (let r=0;r<RING_COUNT;r++){
+        const k = (r+1)/RING_COUNT;
+        const outAmt = ext*growth*k*OUT_SCALE;
+        const backAmt = ext*growth*k*BACK_SCALE*BACKWARD_SIGN;
+
+        newPos.copy(ovalPos).addScaledVector(offset, outAmt).addScaledVector(az, backAmt);
+
+        const vi = extVertexIndex(r, i);
+        pos[vi*3]=newPos.x; pos[vi*3+1]=newPos.y; pos[vi*3+2]=newPos.z;
+        uv[vi*2] = uvCentroid.x + ou*(1+outAmt*UV_EXTRAPOLATE_SCALE);
+        uv[vi*2+1] = uvCentroid.y + ov*(1+outAmt*UV_EXTRAPOLATE_SCALE);
+      }
+    }
+  }
+
   return {
     object3D: mesh,
 
@@ -77,20 +212,22 @@ export function create(ctx){
       material.uniforms.bands.value = R()<.45 ? 1 : 0;
       material.uniforms.spd.value = R(.8,.05);
       genOp = R(.98,.86);
+      genExtension = R(1,0);
       applyOpacity();
     },
 
     setOpacityMultiplier(mult){ opacityMultiplier = mult; applyOpacity(); },
+    setExtensionMultiplier(mult){ extensionMultiplier = mult; },
 
     updateGeometry(landmarks, aspect){
       const pos = geometry.attributes.position.array;
       const uv  = geometry.attributes.uv.array;
-      const n = Math.min(landmarks.length, 478);
-      for (let i=0;i<n;i++){
+      for (let i=0;i<468;i++){
         toWorld(landmarks[i], aspect, v);
         pos[i*3]=v.x; pos[i*3+1]=v.y; pos[i*3+2]=v.z + .002;
         uv[i*2]=landmarks[i].x; uv[i*2+1]=1-landmarks[i].y;
       }
+      applyExtension(landmarks, aspect);
       geometry.attributes.position.needsUpdate = true;
       geometry.attributes.uv.needsUpdate = true;
       geometry.computeVertexNormals();

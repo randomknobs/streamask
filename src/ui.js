@@ -3,7 +3,7 @@ const $ = id => document.getElementById(id);
 // панель и хоткеи. Само состояние (showSkin, smoothing, ...) держит main.js —
 // сюда приходят только колбэки.
 export function setupUI({ onReroll, onAutoTick, onToggleSkin, onToggleShards, onToggleCrown,
-                           onSmoothing, onScale, onSkinOpacity, onChroma }){
+                           onSmoothing, onScale, onSkinOpacity, onSkinExtension, onChroma }){
   let autoTimer = null;
 
   $('reroll').onclick = () => onReroll();
@@ -18,6 +18,7 @@ export function setupUI({ onReroll, onAutoTick, onToggleSkin, onToggleShards, on
   $('smooth').oninput = e => onSmoothing(+e.target.value);
   $('scale').oninput  = e => onScale(+e.target.value);
   $('skinOpacity').oninput = e => onSkinOpacity(+e.target.value);
+  $('skinExtension').oninput = e => onSkinExtension(+e.target.value);
   $('chroma').onclick = e => {
     const on = document.body.style.background !== 'rgb(0, 255, 0)';
     document.body.style.background = on ? '#00ff00' : 'var(--bg)';

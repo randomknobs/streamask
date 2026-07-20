@@ -317,14 +317,23 @@ function buildCapBulb(radius, height){
   return new THREE.LatheGeometry(pts, 24);
 }
 
-// плоский диск с коротким бортиком — "height" здесь намеренно почти не
-// используется (иначе противоречит "плоский"), бортик всегда низкий.
-function buildCapFlat(radius){
+// плоский диск с широкими полями — раньше был самой скудной по покрытию
+// формой (толщина .14×radius, без полей), сейчас толще и с полями,
+// выступающими далеко за радиус головы, как у шляпы. "height" по-прежнему
+// почти не используется — иначе противоречит "плоский".
+// Возвращает МАССИВ (тулья + поля) — как и segments, не единая геометрия.
+function buildCapFlatGeoms(radius){
   const DROP = .08;
-  const rimHeight = radius*.14;
-  const geo = new THREE.CylinderGeometry(radius, radius*.96, rimHeight, 24);
-  geo.translate(0, rimHeight/2-DROP, 0);
-  return geo;
+  const crownHeight = radius*.24;
+  const crown = new THREE.CylinderGeometry(radius, radius*.96, crownHeight, 24);
+  crown.translate(0, crownHeight/2-DROP, 0);
+
+  const brimOuter = radius*1.45;
+  const brimThickness = radius*.06;
+  const brim = new THREE.CylinderGeometry(brimOuter, brimOuter, brimThickness, 28);
+  brim.translate(0, brimThickness/2-DROP, 0);
+
+  return [crown, brim];
 }
 
 // возвращает МАССИВ геометрий (не одна) — доли с зазорами, не единая форма
@@ -344,21 +353,22 @@ function buildCapSegmentsGeoms(radius, height){
   return geoms;
 }
 
+// билдеры либо возвращают одну THREE.BufferGeometry, либо массив (несколько
+// раздельных мешей одной формы — segments, flat) — оба случая приводятся
+// к единому циклу добавления Mesh'ей с общим материалом.
 function addCapShape(shape, radius, height, material, group){
-  if (shape === 'segments'){
-    for (const geo of buildCapSegmentsGeoms(radius, height)) group.add(new THREE.Mesh(geo, material));
-    return;
-  }
-  const geo = {
+  const result = {
     dome: () => buildCapDome(radius),
     low: () => buildCapLow(radius),
     deep: () => buildCapDeep(radius),
     cone: () => buildCapCone(radius, height),
     box: () => buildCapBox(radius),
     bulb: () => buildCapBulb(radius, height),
-    flat: () => buildCapFlat(radius),
+    flat: () => buildCapFlatGeoms(radius),
+    segments: () => buildCapSegmentsGeoms(radius, height),
   }[shape]();
-  group.add(new THREE.Mesh(geo, material));
+  const geoms = Array.isArray(result) ? result : [result];
+  for (const geo of geoms) group.add(new THREE.Mesh(geo, material));
 }
 
 // Кастомный ShaderMaterial — не через makeMaterial(), потому что паттерн

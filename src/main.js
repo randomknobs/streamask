@@ -80,6 +80,7 @@ async function initMP(){
   landmarker = await loadLandmarker();
   skin = skinLayer.create({ scene, palette: [], params: {} });
   skin.setOpacityMultiplier(skinOpacity);
+  skin.setExtensionMultiplier(skinExtension);
   mouth = mouthLayer.create({ scene, palette: [], params: {} });
 }
 
@@ -130,7 +131,7 @@ function resize(){
 addEventListener('resize', resize);
 
 /* ────────────────────────── состояние панели ──────────────────── */
-let userScale = 1, smoothing = .6, showSkin = true, showShards = true, showCrown = true, skinOpacity = 1;
+let userScale = 1, smoothing = .6, showSkin = true, showShards = true, showCrown = true, skinOpacity = 1, skinExtension = 1;
 
 /* ────────────────────────── loop ──────────────────────────────── */
 let lastTs = -1, t0 = performance.now(), frames = 0, fps = 0, fpsT = performance.now();
@@ -198,6 +199,7 @@ setupUI({
   onSmoothing: v => smoothing = v,
   onScale: v => userScale = v,
   onSkinOpacity: v => { skinOpacity = v; if(skin) skin.setOpacityMultiplier(v); },
+  onSkinExtension: v => { skinExtension = v; if(skin) skin.setExtensionMultiplier(v); },
   onChroma: on => { video.style.display = on ? 'none' : 'block'; },
 });
 
