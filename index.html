@@ -56,6 +56,11 @@
   .thumb-del { position:absolute; top:4px; right:4px; padding:2px 7px; font-size:13px; line-height:1.6;
                background:rgba(8,9,12,.75); border-color:#3a2c2c; }
   .thumb-del:hover { border-color:#ff8080; color:#ff8080; }
+  .chk { display:flex; gap:5px; align-items:center; font-size:11px; color:var(--dim); cursor:pointer; }
+  #recStatus { display:none; align-items:center; gap:6px; color:#ff5c5c; font-size:11px; }
+  #recDot { width:8px; height:8px; border-radius:50%; background:#ff5c5c; display:inline-block;
+            animation: recblink 1s infinite; }
+  @keyframes recblink { 0%,100% { opacity:1; } 50% { opacity:.25; } }
 </style>
 <script type="importmap">
 { "imports": { "three": "https://cdn.jsdelivr.net/npm/three@0.160.0/build/three.module.js" } }
@@ -104,6 +109,17 @@
   <input id="skinWidth" type="range" min="0" max="1.0" step="0.05" value="1">
   <div class="lbl">chroma key</div>
   <div class="row"><button id="chroma">green screen</button></div>
+
+  <div class="lbl">recording</div>
+  <div class="row">
+    <button id="record">● record (V)</button>
+    <button id="share">share</button>
+  </div>
+  <div id="recStatus"><span id="recDot"></span><span id="recTimer">00:00</span></div>
+  <div class="row">
+    <label class="chk"><input id="micToggle" type="checkbox"> mic</label>
+    <label class="chk"><input id="transparentToggle" type="checkbox"> transparent bg</label>
+  </div>
 
   <div class="row">
     <button id="save">save</button>

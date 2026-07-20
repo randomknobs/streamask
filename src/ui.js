@@ -5,7 +5,8 @@ const $ = id => document.getElementById(id);
 export function setupUI({ onReroll, onAutoTick, onToggleSkin, onToggleShards, onToggleCrown,
                            onToggleEyes, onToggleBrows, onToggleMouth, onToggleFreeze,
                            onScale, onSkinExtension, onSkinWidth,
-                           onDensity, onMouthReaction, onChroma, onSave, onOpenCollection }){
+                           onDensity, onMouthReaction, onChroma, onSave, onOpenCollection,
+                           onToggleRecord, onShare }){
   let autoTimer = null;
 
   $('reroll').onclick = () => onReroll();
@@ -35,9 +36,12 @@ export function setupUI({ onReroll, onAutoTick, onToggleSkin, onToggleShards, on
 
   $('save').onclick = () => onSave();
   $('collectionBtn').onclick = () => onOpenCollection();
+  $('record').onclick = () => onToggleRecord();
+  $('share').onclick = () => onShare();
 
   addEventListener('keydown', e => {
     if(e.key==='r'||e.key==='R'||e.key==='к'||e.key==='К') onReroll();
+    if(e.key==='v'||e.key==='V'||e.key==='м'||e.key==='М') onToggleRecord();
     if(e.key==='h'||e.key==='H'||e.key==='р'||e.key==='Р'){
       $('ui').classList.toggle('hidden');
       // курсор прячется вместе с панелью — иначе стрелка мыши болтается

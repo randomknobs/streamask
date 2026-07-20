@@ -10,12 +10,19 @@ import * as browsLayer from './layers/brows.js';
 import * as crownLayer from './layers/crown.js';
 import { setupUI } from './ui.js';
 import * as storage from './storage.js';
+import { createRecorder, dataUrlToBlobSync } from './record.js';
 
 const $ = id => document.getElementById(id);
 const video = $('cam'), canvas = $('gl'), statusEl = $('status'), errEl = $('err');
 
 /* ────────────────────────── three setup ───────────────────────── */
-const renderer = new THREE.WebGLRenderer({canvas, alpha:true, antialias:true});
+// preserveDrawingBuffer:true — фаза 6 читает этот канвас из record.js на
+// requestVideoFrameCallback, отдельном от основного цикла рендера коллбэке
+// (нарочно, см. record.js: так композит идёт по кадрам камеры, а не по
+// герцовке дисплея). Без preserveDrawingBuffer браузер вправе очистить
+// буфер сразу после renderer.render() и до того, как rVFC успеет его
+// прочитать — композит ловил бы случайные пустые кадры.
+const renderer = new THREE.WebGLRenderer({canvas, alpha:true, antialias:true, preserveDrawingBuffer:true});
 renderer.setPixelRatio(Math.min(devicePixelRatio,2));
 const scene = new THREE.Scene();
 const camera = new THREE.OrthographicCamera(-1,1,1,-1,-10,10);
@@ -32,6 +39,7 @@ scene.add(anchor);
 const tracker = createFaceTracker();
 const blend = createBlendshapeSmoother();
 const lmSmoother = createLandmarkSmoother();
+const recorder = createRecorder({ video, glCanvas: canvas });
 
 /* ────────────────────────── генератор маски ───────────────────── */
 let skin = null;
@@ -200,6 +208,110 @@ function openCollection(){
 }
 function closeCollection(){
   $('galleryModal').classList.add('modal-hidden');
+}
+
+/* ────────────────────── фаза 6/6b: запись и «поделиться» ───────── */
+function formatTime(sec){
+  const m = Math.floor(sec/60), s = Math.floor(sec%60);
+  return `${String(m).padStart(2,'0')}:${String(s).padStart(2,'0')}`;
+}
+
+function downloadBlob(blob, filename){
+  const url = URL.createObjectURL(blob);
+  const a = document.createElement('a');
+  a.href = url; a.download = filename;
+  a.click();
+  URL.revokeObjectURL(url);
+}
+
+// canShare — проверяем ИМЕННО через canShare({files}), не по user-agent
+// (спека прямо это требует: десктопный Chrome файлы не поддерживает,
+// мобильные и Safari на macOS — да, и это не всегда совпадает с тем, что
+// можно было бы угадать по UA).
+function canShareFiles(mimeType){
+  try { return !!navigator.canShare?.({ files:[new File([], 'probe', { type:mimeType })] }); }
+  catch(e){ return false; }
+}
+
+function updateShareButtonLabel(){
+  const mime = recorder.lastBlob ? (recorder.lastMime || 'video/webm') : 'image/png';
+  $('share').textContent = canShareFiles(mime) ? 'share' : 'download';
+}
+
+let micStreamForRecording = null;
+
+async function toggleRecording(){
+  if (recorder.isRecording){
+    recorder.stopRecording();
+    return;
+  }
+
+  const wantMic = $('micToggle').checked;
+  const transparent = $('transparentToggle').checked;
+  micStreamForRecording = null;
+  if (wantMic){
+    try {
+      micStreamForRecording = await navigator.mediaDevices.getUserMedia({ audio:true });
+    } catch(e){
+      console.error(e);
+      alert('Could not access the microphone: ' + e.message + '. Recording without audio.');
+    }
+  }
+
+  const started = recorder.startRecording({
+    micStream: micStreamForRecording,
+    transparent,
+    onTick: sec => { $('recTimer').textContent = formatTime(sec); },
+    onStop: (blob, mime) => {
+      $('recStatus').style.display = 'none';
+      $('record').classList.remove('on');
+      $('record').textContent = '● record (V)';
+      if (micStreamForRecording){ micStreamForRecording.getTracks().forEach(t=>t.stop()); micStreamForRecording = null; }
+      downloadBlob(blob, `streamask-${currentSeed}-${Date.now()}.webm`);
+      updateShareButtonLabel();
+    },
+    onWarnLong: () => alert('Recording has passed 10 minutes - consider stopping soon, long recordings use a lot of memory.'),
+  });
+
+  if (!started){
+    alert('Recording is not supported in this browser.');
+    if (micStreamForRecording){ micStreamForRecording.getTracks().forEach(t=>t.stop()); micStreamForRecording = null; }
+    return;
+  }
+
+  $('recStatus').style.display = 'flex';
+  $('recTimer').textContent = '00:00';
+  $('record').classList.add('on');
+  $('record').textContent = '● stop (V)';
+  if (recorder.transparentFallbackActive){
+    alert("This browser's encoder does not support a transparent background - recording on a green background instead.");
+  }
+}
+
+// navigator.share() обязан вызываться синхронно из обработчика реального
+// клика, без await до самого вызова - иначе часть браузеров тихо отклоняет
+// его как не идущий от жеста пользователя. Всё до await ниже (File(...),
+// dataUrlToBlobSync) синхронно; await стоит только НА САМОМ share().
+function doShare(){
+  let file;
+  if (recorder.lastBlob){
+    file = new File([recorder.lastBlob], `streamask-${currentSeed}.webm`, { type: recorder.lastMime || 'video/webm' });
+  } else {
+    const dataUrl = recorder.snapshotDataUrl({ transparent: $('transparentToggle').checked });
+    const blob = dataUrlToBlobSync(dataUrl);
+    file = new File([blob], `streamask-${currentSeed}.png`, { type:'image/png' });
+  }
+
+  const shareText = `seed: ${currentSeed}\nhttps://randomknobs.github.io/streamask/#${currentSeed}`;
+
+  if (navigator.canShare?.({ files:[file] })){
+    navigator.share({ files:[file], title:'streamask', text:shareText }).catch(e => {
+      // отмену шаринга пользователем не показываем как ошибку
+      if (e.name !== 'AbortError') console.error(e);
+    });
+  } else {
+    downloadBlob(file, file.name);
+  }
 }
 
 /* ────────────────────────── mediapipe ─────────────────────────── */
@@ -374,6 +486,8 @@ setupUI({
   onChroma: on => { video.style.visibility = on ? 'hidden' : 'visible'; },
   onSave: () => { pendingSave = true; },
   onOpenCollection: () => openCollection(),
+  onToggleRecord: () => toggleRecording(),
+  onShare: () => doShare(),
 });
 
 $('galleryModalBackdrop').onclick = () => closeCollection();
@@ -406,6 +520,7 @@ async function start(deviceId){
     await initMP();
     generate(location.hash.slice(1) || undefined);
     renderGallery();
+    updateShareButtonLabel();
     statusEl.textContent = 'ok';
     loop();
   } catch(err){
