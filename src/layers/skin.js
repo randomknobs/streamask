@@ -99,11 +99,13 @@ export function create(ctx){
   const { scene } = ctx;
 
   const material = new THREE.ShaderMaterial({
-    transparent:true, side:THREE.DoubleSide, depthWrite:false,
+    // кожа всегда полностью непрозрачна — честно перекрывает всё за собой
+    // и пишет глубину, без отдельной ветки на порог непрозрачности.
+    transparent:false, side:THREE.DoubleSide, depthWrite:true,
     extensions:{ derivatives:true }, // fwidth() — используется паттернами (АА краёв) и режимом outline
     uniforms:{ t:{value:0}, cA:{value:new THREE.Color()}, cB:{value:new THREE.Color()},
                cC:{value:new THREE.Color()}, freq:{value:12}, warp:{value:1},
-               bands:{value:0}, spd:{value:.3}, op:{value:.9},
+               bands:{value:0}, spd:{value:.3},
                layerId:{value:[0,0,0,0]},
                layerParams:{value:[new THREE.Vector4(),new THREE.Vector4(),new THREE.Vector4(),new THREE.Vector4()]},
                layerColor:{value:[new THREE.Color(),new THREE.Color(),new THREE.Color(),new THREE.Color()]},
@@ -123,7 +125,7 @@ export function create(ctx){
       void main(){ vU=uv; vP=position;
         gl_Position=projectionMatrix*modelViewMatrix*vec4(position,1.); }`,
     fragmentShader:`precision highp float;
-      uniform float t,freq,warp,bands,spd,op; uniform vec3 cA,cB,cC;
+      uniform float t,freq,warp,bands,spd; uniform vec3 cA,cB,cC;
       uniform int layerId[4]; uniform vec4 layerParams[4];
       uniform vec3 layerColor[4]; uniform int layerBlend[4]; uniform float layerAngle[4];
       uniform int scheme, bandCount;
@@ -239,7 +241,7 @@ export function create(ctx){
         float zEdge = 1.0 - smoothstep(0.0, max(zEdgePx,1e-5), zMargin);
         c = mix(c, contourColor, zEdge);
 
-        gl_FragColor=vec4(c,op);
+        gl_FragColor=vec4(c,1.0);
       }`
   });
 
@@ -258,22 +260,6 @@ export function create(ctx){
   scene.add(mesh);
 
   const v = new THREE.Vector3();
-
-  // op = genOp (из сида), ПОКА пользователь не тронул слайдер непрозрачности.
-  // opacityOverride — абсолютное значение слайдера, не множитель: как
-  // только задан (не null), побеждает всегда, реролл его не трогает (сид
-  // продолжает генерировать genOp каждый раз, но применяется он только
-  // если override ещё не выставлен). На полной непрозрачности честно
-  // перекрываем всё за собой — без этого depthWrite:false даёт
-  // просвечивание даже при op=1.
-  let genOp = .9, opacityOverride = null;
-  function applyOpacity(){
-    const finalOp = opacityOverride !== null ? opacityOverride : genOp;
-    material.uniforms.op.value = finalOp;
-    const opaque = finalOp >= .95;
-    material.transparent = !opaque;
-    material.depthWrite = opaque;
-  }
 
   // extension/widthExtension — та же логика: genExtension/genWidthExtension
   // из сида действуют только до первого касания соответствующего слайдера,
@@ -418,10 +404,8 @@ export function create(ctx){
       material.uniforms.warp.value = R(3,0);
       material.uniforms.bands.value = R()<.45 ? 1 : 0;
       material.uniforms.spd.value = R(.8,.05);
-      genOp = R(.98,.86);
       genExtension = R(1,0);
       genWidthExtension = R(1,0);
-      applyOpacity();
 
       const rngLike = { R, RI, pick };
       const numLayers = RI(5,2); // 2..4 включительно
@@ -539,7 +523,6 @@ export function create(ctx){
       }
     },
 
-    setOpacityOverride(v){ opacityOverride = v; applyOpacity(); },
     setExtensionOverride(v){ extensionOverride = v; },
     setWidthExtensionOverride(v){ widthExtensionOverride = v; },
 

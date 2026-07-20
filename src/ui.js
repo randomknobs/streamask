@@ -4,7 +4,7 @@ const $ = id => document.getElementById(id);
 // сюда приходят только колбэки.
 export function setupUI({ onReroll, onAutoTick, onToggleSkin, onToggleShards, onToggleCrown,
                            onToggleEyes, onToggleBrows, onToggleMouth, onToggleFreeze,
-                           onScale, onSkinOpacity, onSkinExtension, onSkinWidth,
+                           onScale, onSkinExtension, onSkinWidth,
                            onDensity, onMouthReaction, onChroma, onSave, onOpenCollection }){
   let autoTimer = null;
 
@@ -22,7 +22,6 @@ export function setupUI({ onReroll, onAutoTick, onToggleSkin, onToggleShards, on
   ['skin','shards','crown','eyes','brows','mouth'].forEach(id => $(id).classList.add('on'));
   $('freeze').onclick = e => { const on = onToggleFreeze(); e.target.classList.toggle('on', on); };
   $('scale').oninput  = e => onScale(+e.target.value);
-  $('skinOpacity').oninput = e => onSkinOpacity(+e.target.value);
   $('skinExtension').oninput = e => onSkinExtension(+e.target.value);
   $('skinWidth').oninput = e => onSkinWidth(+e.target.value);
   $('density').oninput = e => onDensity(+e.target.value);

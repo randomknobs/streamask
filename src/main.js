@@ -97,7 +97,6 @@ function regenerateShardsOnly(){
 // где override===null означает "бери сгенерированное".
 function getOverrideParams(){
   const p = {};
-  if (skinOpacityOverride !== null) p.skinOpacity = skinOpacityOverride;
   if (skinExtensionOverride !== null) p.skinExtension = skinExtensionOverride;
   if (skinWidthOverride !== null) p.skinWidth = skinWidthOverride;
   if (shardDensityOverride !== null) p.density = shardDensityOverride;
@@ -108,12 +107,10 @@ function getOverrideParams(){
 // параметров (ключей может не быть — тогда конкретный слайдер возвращается
 // в null, "бери сгенерированное", а не остаётся от предыдущей маски).
 function applyOverrideParams(p){
-  skinOpacityOverride = p.skinOpacity ?? null;
   skinExtensionOverride = p.skinExtension ?? null;
   skinWidthOverride = p.skinWidth ?? null;
   shardDensityOverride = p.density ?? null;
   if (skin){
-    skin.setOpacityOverride(skinOpacityOverride);
     skin.setExtensionOverride(skinExtensionOverride);
     skin.setWidthExtensionOverride(skinWidthOverride);
   }
@@ -123,7 +120,6 @@ function applyOverrideParams(p){
   // слайдеры визуально отражают то, что реально применилось; нетронутые в
   // сохранённой маске параметры не трогаем — их эффективное значение и так
   // не зависит от текущего положения бегунка (override===null).
-  if (p.skinOpacity != null) $('skinOpacity').value = p.skinOpacity;
   if (p.skinExtension != null) $('skinExtension').value = p.skinExtension;
   if (p.skinWidth != null) $('skinWidth').value = p.skinWidth;
   if (p.density != null) $('density').value = p.density;
@@ -155,9 +151,9 @@ function doSave(){
                   thumb: captureThumbnail(), params: getOverrideParams() };
   const res = storage.add(entry);
   if (!res.ok){
-    if (res.reason === 'limit') alert(`Достигнут лимит в ${res.limit} масок (сейчас ${res.current}). Удали что-нибудь, чтобы сохранить новую.`);
-    else if (res.reason === 'quota') alert('Браузер отказал в месте для сохранения (localStorage переполнен). Удали несколько масок или экспортируй коллекцию и очисти её.');
-    else alert('Не удалось сохранить маску.');
+    if (res.reason === 'limit') alert(`Reached the limit of ${res.limit} masks (currently ${res.current}). Delete something to save a new one.`);
+    else if (res.reason === 'quota') alert('The browser refused to save (localStorage is full). Delete a few masks to free up space.');
+    else alert('Could not save the mask.');
     return;
   }
   renderGallery();
@@ -186,13 +182,13 @@ function renderGallery(){
     const delBtn = document.createElement('button');
     delBtn.className = 'thumb-del';
     delBtn.textContent = '×';
-    delBtn.title = 'удалить';
+    delBtn.title = 'delete';
     delBtn.onclick = e => { e.stopPropagation(); storage.remove(entry.ts); renderGallery(); };
 
     el.append(img, nameEl, delBtn);
     el.onclick = () => { recall(entry); closeCollection(); };
     el.ondblclick = () => {
-      const newName = prompt('Новое имя маски:', entry.name);
+      const newName = prompt('New mask name:', entry.name);
       if (newName){ storage.rename(entry.ts, newName); renderGallery(); }
     };
     gal.appendChild(el);
@@ -209,14 +205,13 @@ function closeCollection(){
 /* ────────────────────────── mediapipe ─────────────────────────── */
 let landmarker = null;
 async function initMP(){
-  statusEl.textContent = 'загрузка модели…';
+  statusEl.textContent = 'loading model…';
   landmarker = await loadLandmarker();
   skin = skinLayer.create({ scene, palette: [], params: {} });
   // если пользователь уже трогал слайдер до того, как кожа успела
   // создаться (гейт разрешения камеры ещё не пройден) — применяем
   // запомненное значение сейчас; если не трогал, ничего не вызываем и
   // кожа берёт сгенерированное из сида (см. skin.js: override===null).
-  if (skinOpacityOverride !== null) skin.setOpacityOverride(skinOpacityOverride);
   if (skinExtensionOverride !== null) skin.setExtensionOverride(skinExtensionOverride);
   if (skinWidthOverride !== null) skin.setWidthExtensionOverride(skinWidthOverride);
   mouth = mouthLayer.create({ scene, palette: [], params: {} });
@@ -224,7 +219,7 @@ async function initMP(){
 
 let currentStream = null;
 async function initCam(deviceId){
-  statusEl.textContent = 'камера…';
+  statusEl.textContent = 'camera…';
   if(currentStream) currentStream.getTracks().forEach(t => t.stop());
   const constraints = { audio:false, video:{ width:{ideal:1280}, height:{ideal:720} } };
   if(deviceId) constraints.video.deviceId = { exact: deviceId };
@@ -244,12 +239,12 @@ async function listDevices(){
   sel.innerHTML = '';
   devs.forEach((d,i) => {
     const o = document.createElement('option');
-    o.value = d.deviceId; o.textContent = d.label || `камера ${i+1}`;
+    o.value = d.deviceId; o.textContent = d.label || `camera ${i+1}`;
     if(d.deviceId === active) o.selected = true;
     sel.appendChild(o);
   });
   sel.onchange = async () => {
-    try { await initCam(sel.value); } catch(e){ errEl.textContent = 'Ошибка: ' + e.message; }
+    try { await initCam(sel.value); } catch(e){ errEl.textContent = 'Error: ' + e.message; }
   };
 }
 
@@ -274,7 +269,7 @@ let showSkin = true, showShards = true, showCrown = true, showEyes = true, showB
 // null = слайдер ещё не тронут, слой берёт сгенерированное из сида;
 // как только пользователь двигает слайдер — абсолютное значение здесь,
 // реролл (generate()) его не трогает и не перезаписывает.
-let skinOpacityOverride = null, skinExtensionOverride = null, skinWidthOverride = null, shardDensityOverride = null;
+let skinExtensionOverride = null, skinWidthOverride = null, shardDensityOverride = null;
 // множитель на mouthEnergy (единственный потребитель — shards.update, см.
 // loop()) — не оверрайд поверх сгенерированного и не часть сида, просто
 // сила реакции на мимику, дефолт 1.
@@ -370,7 +365,6 @@ setupUI({
     return frozen;
   },
   onScale: v => userScale = v,
-  onSkinOpacity: v => { skinOpacityOverride = v; if(skin) skin.setOpacityOverride(v); },
   onSkinExtension: v => { skinExtensionOverride = v; if(skin) skin.setExtensionOverride(v); },
   onSkinWidth: v => { skinWidthOverride = v; if(skin) skin.setWidthExtensionOverride(v); },
   onDensity: v => { shardDensityOverride = v; regenerateShardsOnly(); },
@@ -388,12 +382,12 @@ addEventListener('keydown', e => { if (e.key === 'Escape') closeCollection(); })
 
 /* ────────────────────────── boot ──────────────────────────────── */
 function camError(err){
-  if(!window.isSecureContext) return 'Небезопасный контекст. Открой через http://localhost или https, file:// камеру не отдаст.';
+  if(!window.isSecureContext) return 'Insecure context. Open via http://localhost or https - file:// will never get camera access.';
   switch(err.name){
-    case 'NotAllowedError': return 'Доступ запрещён. Нажми на иконку камеры в адресной строке → Разрешить, и жми кнопку снова.';
-    case 'NotFoundError':   return 'Камера не найдена.';
-    case 'NotReadableError':return 'Камера занята другой программой (OBS, Zoom, Telegram?). Закрой и попробуй снова.';
-    case 'OverconstrainedError': return 'Это устройство не поддерживает запрошенный режим.';
+    case 'NotAllowedError': return 'Access denied. Click the camera icon in the address bar → Allow, then click the button again.';
+    case 'NotFoundError':   return 'No camera found.';
+    case 'NotReadableError':return 'Camera is busy in another app (OBS, Zoom, Telegram?). Close it and try again.';
+    case 'OverconstrainedError': return 'This device does not support the requested mode.';
     default: return err.name + ': ' + err.message;
   }
 }
@@ -402,7 +396,7 @@ let started = false;
 async function start(deviceId){
   if(started) return;
   const btn = $('allow');
-  btn.disabled = true; btn.textContent = 'подключаюсь…';
+  btn.disabled = true; btn.textContent = 'connecting…';
   $('gateerr').textContent = '';
   try {
     await initCam(deviceId);
@@ -417,7 +411,7 @@ async function start(deviceId){
   } catch(err){
     console.error(err);
     $('gateerr').textContent = camError(err);
-    btn.disabled = false; btn.textContent = 'Попробовать снова';
+    btn.disabled = false; btn.textContent = 'Try again';
   }
 }
 $('allow').onclick = () => start();
