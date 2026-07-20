@@ -254,26 +254,29 @@ export function create(ctx){
 
   const v = new THREE.Vector3();
 
-  // op = genOp (из сида) × opacityMultiplier (ручной слайдер, в сид не пишется).
-  // На полной непрозрачности честно перекрываем всё за собой — без этого
-  // depthWrite:false даёт просвечивание даже при op=1.
-  let genOp = .9, opacityMultiplier = 1;
+  // op = genOp (из сида), ПОКА пользователь не тронул слайдер непрозрачности.
+  // opacityOverride — абсолютное значение слайдера, не множитель: как
+  // только задан (не null), побеждает всегда, реролл его не трогает (сид
+  // продолжает генерировать genOp каждый раз, но применяется он только
+  // если override ещё не выставлен). На полной непрозрачности честно
+  // перекрываем всё за собой — без этого depthWrite:false даёт
+  // просвечивание даже при op=1.
+  let genOp = .9, opacityOverride = null;
   function applyOpacity(){
-    const finalOp = genOp * opacityMultiplier;
+    const finalOp = opacityOverride !== null ? opacityOverride : genOp;
     material.uniforms.op.value = finalOp;
     const opaque = finalOp >= .95;
     material.transparent = !opaque;
     material.depthWrite = opaque;
   }
 
-  // extension = genExtension (из сида) × extensionMultiplier (ручной слайдер,
-  // в сид не пишется) — тот же паттерн, что и с непрозрачностью.
-  // widthExtension — независимый параметр той же формы: своя генерация из
-  // сида, свой ручной множитель. Не должен пересекаться с extension: рост
-  // вдоль ay (вертикаль) зависит только от ext, рост вдоль ax (латераль)
-  // только от wext — см. applyExtension.
-  let genExtension = 0, extensionMultiplier = 1;
-  let genWidthExtension = 0, widthExtensionMultiplier = 1;
+  // extension/widthExtension — та же логика: genExtension/genWidthExtension
+  // из сида действуют только до первого касания соответствующего слайдера,
+  // дальше слайдер — абсолютное значение, реролл его не переопределяет.
+  // Независимость друг от друга (вертикаль только от ext, латераль только
+  // от wext) не меняется — см. applyExtension.
+  let genExtension = 0, extensionOverride = null;
+  let genWidthExtension = 0, widthExtensionOverride = null;
 
   // рабочие векторы для расширения — переиспользуются каждый кадр, без
   // аллокаций в цикле по 36×4 вершинам.
@@ -318,8 +321,8 @@ export function create(ctx){
   function applyExtension(landmarks, aspect){
     const pos = geometry.attributes.position.array;
     const uv  = geometry.attributes.uv.array;
-    const ext = genExtension * extensionMultiplier;
-    const wext = genWidthExtension * widthExtensionMultiplier;
+    const ext = extensionOverride !== null ? extensionOverride : genExtension;
+    const wext = widthExtensionOverride !== null ? widthExtensionOverride : genWidthExtension;
 
     toWorld(landmarks[33], aspect, tmpEyeR);
     toWorld(landmarks[263], aspect, tmpEyeL);
@@ -511,9 +514,9 @@ export function create(ctx){
       }
     },
 
-    setOpacityMultiplier(mult){ opacityMultiplier = mult; applyOpacity(); },
-    setExtensionMultiplier(mult){ extensionMultiplier = mult; },
-    setWidthExtensionMultiplier(mult){ widthExtensionMultiplier = mult; },
+    setOpacityOverride(v){ opacityOverride = v; applyOpacity(); },
+    setExtensionOverride(v){ extensionOverride = v; },
+    setWidthExtensionOverride(v){ widthExtensionOverride = v; },
 
     updateGeometry(landmarks, aspect){
       const pos = geometry.attributes.position.array;

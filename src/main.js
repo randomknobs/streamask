@@ -1,7 +1,7 @@
 import * as THREE from 'three';
 import { reseed, seedFrom } from './rng.js';
 import { palette } from './palette.js';
-import { loadLandmarker, createFaceTracker, createBlendshapeSmoother } from './tracking.js';
+import { loadLandmarker, createFaceTracker, createBlendshapeSmoother, createLandmarkSmoother } from './tracking.js';
 import * as skinLayer from './layers/skin.js';
 import * as shardsLayer from './layers/shards.js';
 import * as mouthLayer from './layers/mouth.js';
@@ -30,6 +30,7 @@ scene.add(anchor);
 
 const tracker = createFaceTracker();
 const blend = createBlendshapeSmoother();
+const lmSmoother = createLandmarkSmoother();
 
 /* ────────────────────────── генератор маски ───────────────────── */
 let skin = null;
@@ -79,9 +80,13 @@ async function initMP(){
   statusEl.textContent = 'загрузка модели…';
   landmarker = await loadLandmarker();
   skin = skinLayer.create({ scene, palette: [], params: {} });
-  skin.setOpacityMultiplier(skinOpacity);
-  skin.setExtensionMultiplier(skinExtension);
-  skin.setWidthExtensionMultiplier(skinWidth);
+  // если пользователь уже трогал слайдер до того, как кожа успела
+  // создаться (гейт разрешения камеры ещё не пройден) — применяем
+  // запомненное значение сейчас; если не трогал, ничего не вызываем и
+  // кожа берёт сгенерированное из сида (см. skin.js: override===null).
+  if (skinOpacityOverride !== null) skin.setOpacityOverride(skinOpacityOverride);
+  if (skinExtensionOverride !== null) skin.setExtensionOverride(skinExtensionOverride);
+  if (skinWidthOverride !== null) skin.setWidthExtensionOverride(skinWidthOverride);
   mouth = mouthLayer.create({ scene, palette: [], params: {} });
 }
 
@@ -132,7 +137,11 @@ function resize(){
 addEventListener('resize', resize);
 
 /* ────────────────────────── состояние панели ──────────────────── */
-let userScale = 1, smoothing = .6, showSkin = true, showShards = true, showCrown = true, skinOpacity = 1, skinExtension = 1, skinWidth = 1;
+let userScale = 1, smoothing = .6, showSkin = true, showShards = true, showCrown = true;
+// null = слайдер ещё не тронут, слой берёт сгенерированное из сида;
+// как только пользователь двигает слайдер — абсолютное значение здесь,
+// реролл (generate()) его не трогает и не перезаписывает.
+let skinOpacityOverride = null, skinExtensionOverride = null, skinWidthOverride = null;
 
 /* ────────────────────────── loop ──────────────────────────────── */
 let lastTs = -1, t0 = performance.now(), frames = 0, fps = 0, fpsT = performance.now();
@@ -146,8 +155,11 @@ function loop(){
     lastTs = video.currentTime;
     const res = landmarker.detectForVideo(video, now);
     if(res.faceLandmarks && res.faceLandmarks.length){
-      const lms = res.faceLandmarks[0];
-      tracker.updateAnchor(lms, aspect, anchor, smoothing, userScale);
+      // сглаживаем лендмарки ОДИН раз здесь — все слои ниже (анкер, кожа,
+      // рот, глаза, брови) читают этот же массив, лаг между слоями из-за
+      // разных источников/степеней сглаживания физически невозможен.
+      const lms = lmSmoother.update(res.faceLandmarks[0], smoothing);
+      tracker.updateAnchor(lms, aspect, anchor, userScale);
       // eyes.js пересчитывает позиции в anchor-local через matrixWorld этим
       // же кадром — без принудительного пересчёта тут читал бы матрицу
       // с прошлого кадра (three обновляет её лениво, внутри renderer.render).
@@ -199,9 +211,9 @@ setupUI({
   onToggleCrown: () => { showCrown = !showCrown; return showCrown; },
   onSmoothing: v => smoothing = v,
   onScale: v => userScale = v,
-  onSkinOpacity: v => { skinOpacity = v; if(skin) skin.setOpacityMultiplier(v); },
-  onSkinExtension: v => { skinExtension = v; if(skin) skin.setExtensionMultiplier(v); },
-  onSkinWidth: v => { skinWidth = v; if(skin) skin.setWidthExtensionMultiplier(v); },
+  onSkinOpacity: v => { skinOpacityOverride = v; if(skin) skin.setOpacityOverride(v); },
+  onSkinExtension: v => { skinExtensionOverride = v; if(skin) skin.setExtensionOverride(v); },
+  onSkinWidth: v => { skinWidthOverride = v; if(skin) skin.setWidthExtensionOverride(v); },
   onChroma: on => { video.style.display = on ? 'none' : 'block'; },
 });
 
