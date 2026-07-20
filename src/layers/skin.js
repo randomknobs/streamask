@@ -1,9 +1,18 @@
 import * as THREE from 'three';
 import { FaceLandmarker } from
   'https://cdn.jsdelivr.net/npm/@mediapipe/tasks-vision@0.10.12/vision_bundle.mjs';
-import { R } from '../rng.js';
+import { R, RI, pick } from '../rng.js';
 import { toWorld } from '../tracking.js';
 import { CANONICAL_UV } from '../uv.js';
+import { GLSL_SOURCE, pickPattern, pickContrastingPair } from '../texture/patterns.js';
+
+// стек из 2–4 слоёв паттернов поверх базового градиента, каждый со своим
+// паттерном/масштабом (из patterns.js), углом поворота UV и режимом
+// смешивания. Слот всегда 4 (максимум диапазона), неиспользуемые слоты
+// получают patternId=0 (pattern_plain даёт m≡0 — слой становится
+// no-op вне зависимости от режима смешивания, отдельный "активен" не нужен).
+const MAX_LAYERS = 4;
+const BLEND_MODES = ['over','multiply','screen','mask','outline'];
 
 function buildTriangles(){
   const t = FaceLandmarker.FACE_LANDMARKS_TESSELATION;
@@ -82,18 +91,34 @@ export function create(ctx){
 
   const material = new THREE.ShaderMaterial({
     transparent:true, side:THREE.DoubleSide, depthWrite:false,
+    extensions:{ derivatives:true }, // fwidth() — используется паттернами (АА краёв) и режимом outline
     uniforms:{ t:{value:0}, cA:{value:new THREE.Color()}, cB:{value:new THREE.Color()},
                cC:{value:new THREE.Color()}, freq:{value:12}, warp:{value:1},
-               bands:{value:0}, spd:{value:.3}, op:{value:.9} },
+               bands:{value:0}, spd:{value:.3}, op:{value:.9},
+               layerId:{value:[0,0,0,0]},
+               layerParams:{value:[new THREE.Vector4(),new THREE.Vector4(),new THREE.Vector4(),new THREE.Vector4()]},
+               layerColor:{value:[new THREE.Color(),new THREE.Color(),new THREE.Color(),new THREE.Color()]},
+               layerBlend:{value:[0,0,0,0]},
+               layerAngle:{value:[0,0,0,0]} },
     vertexShader:`varying vec2 vU; varying vec3 vP;
       void main(){ vU=uv; vP=position;
         gl_Position=projectionMatrix*modelViewMatrix*vec4(position,1.); }`,
     fragmentShader:`precision highp float;
       uniform float t,freq,warp,bands,spd,op; uniform vec3 cA,cB,cC;
+      uniform int layerId[4]; uniform vec4 layerParams[4];
+      uniform vec3 layerColor[4]; uniform int layerBlend[4]; uniform float layerAngle[4];
       varying vec2 vU; varying vec3 vP;
       float h(vec2 p){return fract(sin(dot(p,vec2(41.3,289.1)))*43758.5453);}
       float n(vec2 p){vec2 i=floor(p),f=fract(p);f=f*f*(3.-2.*f);
         return mix(mix(h(i),h(i+vec2(1,0)),f.x),mix(h(i+vec2(0,1)),h(i+vec2(1,1)),f.x),f.y);}
+
+      ${GLSL_SOURCE}
+
+      vec2 rotUV(vec2 uv, float ang){
+        vec2 c=uv-0.5; float s=sin(ang), co=cos(ang);
+        return vec2(c.x*co-c.y*s, c.x*s+c.y*co)+0.5;
+      }
+
       void main(){
         vec2 p=vU*freq;
         float w=n(p*.5+t*spd)*warp;
@@ -101,6 +126,34 @@ export function create(ctx){
         if(bands>.5) v=step(.5,v)*.85+v*.15;
         vec3 c=mix(cA,cB,v);
         c=mix(c,cC,smoothstep(.3,.9,n(p*.3-t*spd*.5)));
+
+        // Стек паттернов поверх базового градиента. mask/outline читают m
+        // ПРЕДЫДУЩЕГО слоя (prevM) — «нижний прошёл порог» / «края нижнего»,
+        // как в SPEC.md. Для первого слоя нижнего нет, prevM=1.0 (всегда
+        // "прошёл порог", outline на пустом месте не даёт краёв).
+        float prevM = 1.0;
+        for (int i=0; i<4; i++){
+          vec2 puv = rotUV(vU, layerAngle[i]);
+          float m = patternById(layerId[i], puv, layerParams[i]);
+          vec3 fg = layerColor[i];
+          int mode = layerBlend[i];
+          if (mode==1){ // multiply
+            c = mix(c, c*fg, m);
+          } else if (mode==2){ // screen
+            vec3 scr = 1.0-(1.0-c)*(1.0-fg);
+            c = mix(c, scr, m);
+          } else if (mode==3){ // mask — слой виден только там, где нижний прошёл порог
+            float gate = step(0.5, prevM);
+            c = mix(c, fg, m*gate);
+          } else if (mode==4){ // outline — только края нижнего слоя
+            float e = smoothstep(0.0, 0.2, fwidth(prevM));
+            c = mix(c, fg, e);
+          } else { // over
+            c = mix(c, fg, m);
+          }
+          prevM = m;
+        }
+
         gl_FragColor=vec4(c,op);
       }`
   });
@@ -238,6 +291,27 @@ export function create(ctx){
       genOp = R(.98,.86);
       genExtension = R(1,0);
       applyOpacity();
+
+      const rngLike = { R, RI, pick };
+      const numLayers = RI(5,2); // 2..4 включительно
+      for (let i=0;i<MAX_LAYERS;i++){
+        if (i < numLayers){
+          const patternInfo = pickPattern(rngLike, {});
+          const { fg } = pickContrastingPair(rngLike, cols, .2);
+          material.uniforms.layerId.value[i] = patternInfo.id;
+          material.uniforms.layerParams.value[i].set(...patternInfo.params);
+          material.uniforms.layerColor.value[i].copy(fg);
+          material.uniforms.layerBlend.value[i] = RI(BLEND_MODES.length);
+          material.uniforms.layerAngle.value[i] = R(Math.PI*2,0);
+        } else {
+          // pattern_plain даёт m≡0 — слот полностью no-op, лишние параметры
+          // не важны, но обнуляем для чистоты.
+          material.uniforms.layerId.value[i] = 0;
+          material.uniforms.layerParams.value[i].set(0,0,0,0);
+          material.uniforms.layerBlend.value[i] = 0;
+          material.uniforms.layerAngle.value[i] = 0;
+        }
+      }
     },
 
     setOpacityMultiplier(mult){ opacityMultiplier = mult; applyOpacity(); },
