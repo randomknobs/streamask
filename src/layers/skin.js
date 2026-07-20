@@ -137,7 +137,7 @@ export function create(ctx){
   const tmpFore = new THREE.Vector3(), tmpChin = new THREE.Vector3();
   const ax = new THREE.Vector3(), ay = new THREE.Vector3(), az = new THREE.Vector3();
   const centroid = new THREE.Vector3(), ovalPos = new THREE.Vector3(), offset = new THREE.Vector3();
-  const newPos = new THREE.Vector3();
+  const vertVec = new THREE.Vector3(), horizVec = new THREE.Vector3(), newPos = new THREE.Vector3();
   const uvCentroid = { x:0, y:0 };
 
   // Рост неравномерный по кольцу: сильно вверх (лоб/виски), почти не растём
@@ -146,12 +146,19 @@ export function create(ctx){
   // рост получается сам, без отдельного случая.
   const GROWTH_CHIN = .1, GROWTH_TOP = 1.1;
   const OUT_SCALE = .9, BACK_SCALE = .55;
+  // офсет от центроида раскладывается на вертикальную (вдоль ay) и
+  // горизонтальную (остаток) составляющие. growth применяется ТОЛЬКО к
+  // вертикальной — иначе на уровне глаз/скул/подбородка, где офсет почти
+  // целиком горизонтальный, рост "по вертикали" фактически толкал точку
+  // вбок и раздувал лицо в ширину. Горизонтальная растёт максимум на 5%
+  // (HORIZ_CAP) при ext=1 на самом дальнем кольце — контур на этом уровне
+  // остаётся практически там же, где и исходный овал, при любом extension.
+  const HORIZ_CAP = .05;
   // "назад" = -az. az строится тем же cross(ax,ay), что и анкер в tracking.js,
   // и там +Z (тот же az) — направление "к камере" (осколки летят на +pz,
   // это подтверждённое рабочее поведение). Значит "обратно, вокруг черепа,
   // от камеры" — это -az.
   const BACKWARD_SIGN = -1;
-  const UV_EXTRAPOLATE_SCALE = 1;
 
   function applyExtension(landmarks, aspect){
     const pos = geometry.attributes.position.array;
@@ -179,7 +186,12 @@ export function create(ctx){
       ovalPos.set(pos[oi*3], pos[oi*3+1], pos[oi*3+2]);
       offset.subVectors(ovalPos, centroid);
 
-      const vert = offset.length() > 1e-6 ? offset.dot(ay)/offset.length() : 0;
+      const offLen = offset.length();
+      const vertScalar = offset.dot(ay);
+      vertVec.copy(ay).multiplyScalar(vertScalar);
+      horizVec.subVectors(offset, vertVec);
+
+      const vert = offLen > 1e-6 ? vertScalar/offLen : 0; // -1 подбородок .. +1 макушка/виски
       const t = (vert+1)/2;
       const growth = THREE.MathUtils.lerp(GROWTH_CHIN, GROWTH_TOP, t);
 
@@ -187,15 +199,21 @@ export function create(ctx){
 
       for (let r=0;r<RING_COUNT;r++){
         const k = (r+1)/RING_COUNT;
-        const outAmt = ext*growth*k*OUT_SCALE;
+        const vertGrowthAmt = ext*growth*k*OUT_SCALE;
+        const horizMult = 1 + HORIZ_CAP*ext*k;
         const backAmt = ext*growth*k*BACK_SCALE*BACKWARD_SIGN;
 
-        newPos.copy(ovalPos).addScaledVector(offset, outAmt).addScaledVector(az, backAmt);
+        newPos.copy(centroid)
+          .addScaledVector(vertVec, 1+vertGrowthAmt)
+          .addScaledVector(horizVec, horizMult)
+          .addScaledVector(az, backAmt);
 
         const vi = extVertexIndex(r, i);
         pos[vi*3]=newPos.x; pos[vi*3+1]=newPos.y; pos[vi*3+2]=newPos.z;
-        uv[vi*2] = uvCentroid.x + ou*(1+outAmt*UV_EXTRAPOLATE_SCALE);
-        uv[vi*2+1] = uvCentroid.y + ov*(1+outAmt*UV_EXTRAPOLATE_SCALE);
+        // UV той же логикой: вертикаль (Y) тянется вместе с ростом вверх,
+        // горизонталь (X) почти не меняется — та же причина, что и с 3D.
+        uv[vi*2] = uvCentroid.x + ou*horizMult;
+        uv[vi*2+1] = uvCentroid.y + ov*(1+vertGrowthAmt);
       }
     }
   }
