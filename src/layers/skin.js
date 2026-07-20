@@ -5,6 +5,10 @@ import { R, RI, pick } from '../rng.js';
 import { toWorld } from '../tracking.js';
 import { CANONICAL_UV } from '../uv.js';
 import { GLSL_SOURCE, pickPattern, pickContrastingPair } from '../texture/patterns.js';
+import {
+  GLSL_SOURCE as ZONES_GLSL_SOURCE, ZONE_COUNT, NOSE_UV,
+  SCHEME_IDS, pickScheme
+} from '../texture/zones.js';
 
 // стек из 2–4 слоёв паттернов поверх базового градиента, каждый со своим
 // паттерном/масштабом (из patterns.js), углом поворота UV и режимом
@@ -99,7 +103,17 @@ export function create(ctx){
                layerParams:{value:[new THREE.Vector4(),new THREE.Vector4(),new THREE.Vector4(),new THREE.Vector4()]},
                layerColor:{value:[new THREE.Color(),new THREE.Color(),new THREE.Color(),new THREE.Color()]},
                layerBlend:{value:[0,0,0,0]},
-               layerAngle:{value:[0,0,0,0]} },
+               layerAngle:{value:[0,0,0,0]},
+               // 3c/3d: зоны лица — 9 стилевых слотов (по одному на зону,
+               // см. zones.js), схема раскладки и обводка границ зон.
+               scheme:{value:0}, bandCount:{value:4},
+               zoneStyleId:{value:new Array(ZONE_COUNT).fill(0)},
+               zoneStyleParams:{value:Array.from({length:ZONE_COUNT},()=>new THREE.Vector4())},
+               zoneStyleColor:{value:Array.from({length:ZONE_COUNT},()=>new THREE.Color())},
+               zoneStyleBlend:{value:new Array(ZONE_COUNT).fill(0)},
+               zoneStyleAngle:{value:new Array(ZONE_COUNT).fill(0)},
+               contourColor:{value:new THREE.Color()},
+               noseUV:{value:new THREE.Vector2(NOSE_UV[0], NOSE_UV[1])} },
     vertexShader:`varying vec2 vU; varying vec3 vP;
       void main(){ vU=uv; vP=position;
         gl_Position=projectionMatrix*modelViewMatrix*vec4(position,1.); }`,
@@ -107,12 +121,18 @@ export function create(ctx){
       uniform float t,freq,warp,bands,spd,op; uniform vec3 cA,cB,cC;
       uniform int layerId[4]; uniform vec4 layerParams[4];
       uniform vec3 layerColor[4]; uniform int layerBlend[4]; uniform float layerAngle[4];
+      uniform int scheme, bandCount;
+      uniform int zoneStyleId[${ZONE_COUNT}]; uniform vec4 zoneStyleParams[${ZONE_COUNT}];
+      uniform vec3 zoneStyleColor[${ZONE_COUNT}]; uniform int zoneStyleBlend[${ZONE_COUNT}];
+      uniform float zoneStyleAngle[${ZONE_COUNT}];
+      uniform vec3 contourColor; uniform vec2 noseUV;
       varying vec2 vU; varying vec3 vP;
       float h(vec2 p){return fract(sin(dot(p,vec2(41.3,289.1)))*43758.5453);}
       float n(vec2 p){vec2 i=floor(p),f=fract(p);f=f*f*(3.-2.*f);
         return mix(mix(h(i),h(i+vec2(1,0)),f.x),mix(h(i+vec2(0,1)),h(i+vec2(1,1)),f.x),f.y);}
 
       ${GLSL_SOURCE}
+      ${ZONES_GLSL_SOURCE}
 
       vec2 rotUV(vec2 uv, float ang){
         vec2 c=uv-0.5; float s=sin(ang), co=cos(ang);
@@ -153,6 +173,66 @@ export function create(ctx){
           }
           prevM = m;
         }
+
+        // 3c: региональная заливка по зонам лица/схеме раскладки.
+        // zoneAndMargin — анатомическая зона (argmin эллиптических
+        // расстояний, определён для любой точки — дыр в покрытии нет по
+        // построению) и margin (разница двух ближайших расстояний, мал у
+        // границы двух зон, велик в глубине зоны).
+        float zMargin;
+        int zone = zoneAndMargin(vU, zMargin);
+        int region = regionId(vU, zone, scheme, bandCount);
+
+        // radial-схема красит полярными координатами вокруг кончика носа
+        // (расходящийся от носа узор), остальные схемы — обычным vU.
+        vec2 fillUV = vU;
+        if (scheme==4){
+          vec2 rel = vU - noseUV;
+          float ang = atan(rel.y, rel.x);
+          float rad = length(rel);
+          fillUV = vec2(ang/6.2831853+0.5, rad);
+        }
+
+        // Выбор стиля региона через loop+if по индексу (а не zoneStyle[region]
+        // напрямую) — динамическая индексация uniform-массива произвольным
+        // int ненадёжна на части WebGL1-драйверов, индексация по счётчику
+        // ограниченного for — портируемый паттерн (как и в цикле layerId[i]
+        // выше).
+        vec3 zFg = vec3(0.0); int zId=0; vec4 zParams=vec4(0.0);
+        int zBlend=0; float zAngle=0.0;
+        for (int i=0;i<${ZONE_COUNT};i++){
+          if (i==region){
+            zFg=zoneStyleColor[i]; zId=zoneStyleId[i]; zParams=zoneStyleParams[i];
+            zBlend=zoneStyleBlend[i]; zAngle=zoneStyleAngle[i];
+          }
+        }
+
+        vec2 zpuv = rotUV(fillUV, zAngle);
+        float zm = patternById(zId, zpuv, zParams);
+        // Те же пять режимов, что и в глобальном стеке. mask/outline тут
+        // читают prevM — хвост последнего слоя глобального стека (i=3):
+        // дешёвая, не идеальная, но осмысленная привязка вместо ввода ещё
+        // одного набора uniform только под эти два режима зон.
+        if (zBlend==1){ c = mix(c, c*zFg, zm); }
+        else if (zBlend==2){ vec3 zscr=1.0-(1.0-c)*(1.0-zFg); c=mix(c,zscr,zm); }
+        else if (zBlend==3){ float gate=step(0.5,prevM); c=mix(c,zFg,zm*gate); }
+        else if (zBlend==4){ float ze=smoothstep(0.0,0.2,fwidth(prevM)); c=mix(c,zFg,ze); }
+        else { c = mix(c, zFg, zm); }
+
+        // 3d: орнамент — тонкий контур по краю СВОЕЙ ЖЕ маски zm (реюз уже
+        // посчитанного паттерна региона вместо отдельного набора uniform под
+        // "орнамент"), поверх заливки, цветом контура.
+        float orn = smoothstep(0.0, 0.35, fwidth(zm)*3.0);
+        c = mix(c, contourColor, orn*0.7);
+
+        // 3d: обводка анатомических границ зон. margin непрерывна (в
+        // отличие от zoneId — целочисленного, у него fwidth ненулевой
+        // только в одном пикселе-кварте на самой границе), поэтому её
+        // экранная производная даёт устойчивую, не зависящую от разрешения
+        // толщину линии — стандартный приём для hairline-контуров.
+        float zEdgePx = fwidth(zMargin) * 2.5;
+        float zEdge = 1.0 - smoothstep(0.0, max(zEdgePx,1e-5), zMargin);
+        c = mix(c, contourColor, zEdge);
 
         gl_FragColor=vec4(c,op);
       }`
@@ -301,6 +381,23 @@ export function create(ctx){
     }
   }
 
+  // Общий для 3b (глобальный стек) и 3c (стили зон) розыгрыш одного
+  // "стиля": паттерн из patterns.js + гарантированно контрастный цвет +
+  // случайные угол/режим смешивания.
+  function drawStyle(rngLike, cols){
+    const patternInfo = pickPattern(rngLike, {});
+    const { fg } = pickContrastingPair(rngLike, cols, .2);
+    return { id: patternInfo.id, params: patternInfo.params, color: fg,
+             blend: RI(BLEND_MODES.length), angle: R(Math.PI*2,0) };
+  }
+  function setZoneSlot(i, style){
+    material.uniforms.zoneStyleId.value[i] = style.id;
+    material.uniforms.zoneStyleParams.value[i].set(...style.params);
+    material.uniforms.zoneStyleColor.value[i].copy(style.color);
+    material.uniforms.zoneStyleBlend.value[i] = style.blend;
+    material.uniforms.zoneStyleAngle.value[i] = style.angle;
+  }
+
   return {
     object3D: mesh,
 
@@ -321,13 +418,12 @@ export function create(ctx){
       const numLayers = RI(5,2); // 2..4 включительно
       for (let i=0;i<MAX_LAYERS;i++){
         if (i < numLayers){
-          const patternInfo = pickPattern(rngLike, {});
-          const { fg } = pickContrastingPair(rngLike, cols, .2);
-          material.uniforms.layerId.value[i] = patternInfo.id;
-          material.uniforms.layerParams.value[i].set(...patternInfo.params);
-          material.uniforms.layerColor.value[i].copy(fg);
-          material.uniforms.layerBlend.value[i] = RI(BLEND_MODES.length);
-          material.uniforms.layerAngle.value[i] = R(Math.PI*2,0);
+          const style = drawStyle(rngLike, cols);
+          material.uniforms.layerId.value[i] = style.id;
+          material.uniforms.layerParams.value[i].set(...style.params);
+          material.uniforms.layerColor.value[i].copy(style.color);
+          material.uniforms.layerBlend.value[i] = style.blend;
+          material.uniforms.layerAngle.value[i] = style.angle;
         } else {
           // pattern_plain даёт m≡0 — слот полностью no-op, лишние параметры
           // не важны, но обнуляем для чистоты.
@@ -335,6 +431,82 @@ export function create(ctx){
           material.uniforms.layerParams.value[i].set(0,0,0,0);
           material.uniforms.layerBlend.value[i] = 0;
           material.uniforms.layerAngle.value[i] = 0;
+        }
+      }
+
+      // 3c: зоны лица — схема раскладки из сида, стили зон по схеме.
+      const scheme = pickScheme(rngLike);
+      material.uniforms.scheme.value = SCHEME_IDS[scheme];
+
+      const bandCount = scheme === 'bands' ? RI(6,3) : 4; // 3..5 для bands
+      material.uniforms.bandCount.value = bandCount;
+
+      // 3d: цвет контура — крайняя точка палитры по светлоте (тёмная или
+      // светлая, пополам из сида).
+      {
+        const hsl = { h:0, s:0, l:0 };
+        let darkest = cols[0], lightest = cols[0], minL = Infinity, maxL = -Infinity;
+        for (const c of cols){
+          c.getHSL(hsl);
+          if (hsl.l < minL){ minL = hsl.l; darkest = c; }
+          if (hsl.l > maxL){ maxL = hsl.l; lightest = c; }
+        }
+        material.uniforms.contourColor.value.copy(pick([darkest, lightest]));
+      }
+
+      switch (scheme){
+        case 'patchwork': {
+          // каждая зона независима
+          for (let i=0;i<ZONE_COUNT;i++) setZoneSlot(i, drawStyle(rngLike, cols));
+          break;
+        }
+        case 'mirror': {
+          // левая/правая половина одинаковые: eyeBandLeft копирует
+          // eyeBandRight, cheekLeft копирует cheekRight, остальные зоны
+          // (без пары) — независимы.
+          const forehead = drawStyle(rngLike, cols);
+          const eyeBandRight = drawStyle(rngLike, cols);
+          const noseBridge = drawStyle(rngLike, cols);
+          const cheekRight = drawStyle(rngLike, cols);
+          const mouthArea = drawStyle(rngLike, cols);
+          const chin = drawStyle(rngLike, cols);
+          const jawline = drawStyle(rngLike, cols);
+          setZoneSlot(0, forehead);
+          setZoneSlot(1, eyeBandRight); setZoneSlot(2, eyeBandRight);
+          setZoneSlot(3, noseBridge);
+          setZoneSlot(4, cheekRight); setZoneSlot(5, cheekRight);
+          setZoneSlot(6, mouthArea);
+          setZoneSlot(7, chin);
+          setZoneSlot(8, jawline);
+          break;
+        }
+        case 'maskEyes': {
+          // акцентная полоса через глаза, остальное однотонное (один и тот
+          // же стиль во всех незонах-глазах).
+          const rest = drawStyle(rngLike, cols);
+          const accent = drawStyle(rngLike, cols);
+          for (let i=0;i<ZONE_COUNT;i++) setZoneSlot(i, rest);
+          setZoneSlot(1, accent); setZoneSlot(2, accent); // eyeBandRight/Left
+          break;
+        }
+        case 'split': {
+          // режется по X насквозь (regionId игнорирует zoneId) — слоты 0/1
+          // соответствуют region 0 (uv.x<0.5) / region 1.
+          setZoneSlot(0, drawStyle(rngLike, cols));
+          setZoneSlot(1, drawStyle(rngLike, cols));
+          break;
+        }
+        case 'bands': {
+          // горизонтальные полосы по V (regionId игнорирует zoneId) —
+          // слоты 0..bandCount-1 соответствуют полосам снизу вверх.
+          for (let i=0;i<bandCount;i++) setZoneSlot(i, drawStyle(rngLike, cols));
+          break;
+        }
+        case 'radial': {
+          // единый стиль, расходится от кончика носа полярными координатами
+          // (regionId всегда 0) — слот 0.
+          setZoneSlot(0, drawStyle(rngLike, cols));
+          break;
         }
       }
     },
