@@ -21,22 +21,33 @@ function signedArea2D(pts){
 // независимо от непрозрачности кожи (см. skin.js), но depthTest остаётся
 // включённым, и осколки, которые физически ближе к камере, честно
 // перекрывают шум, как и всё остальное.
+
+// фаза 7: high=1 (макс. после клампа в audio.js) -> контраст ТВ-шума
+// растёт в 3.5 раза множителем вокруг центра 0.5 (см. setAudioHigh) —
+// не "смещение к белому", а именно контраст: тёмные пятна темнеют, яркие
+// светлеют, при high=0 (audio выключен) множитель 1 и картинка не меняется.
+const NOISE_BOOST_K = 3.5;
+
 export function create(ctx){
   const { scene } = ctx;
 
   const material = new THREE.ShaderMaterial({
     transparent:true, depthWrite:false, side:THREE.DoubleSide,
-    uniforms:{ t:{value:0}, jawOpen:{value:0}, opacity:{value:1},
+    uniforms:{ t:{value:0}, jawOpen:{value:0}, opacity:{value:1}, noiseBoost:{value:1},
                tint:{value:new THREE.Color(1,1,1)}, rollSpeed:{value:.6} },
     vertexShader:`varying vec2 vUv;
       void main(){ vUv=uv; gl_Position=projectionMatrix*modelViewMatrix*vec4(position,1.); }`,
     fragmentShader:`precision highp float;
-      uniform float t, jawOpen, rollSpeed, opacity; uniform vec3 tint;
+      uniform float t, jawOpen, rollSpeed, opacity, noiseBoost; uniform vec3 tint;
       varying vec2 vUv;
       float hash(vec2 p){ return fract(sin(dot(p, vec2(41.3,289.1)))*43758.5453); }
       void main(){
         float frame = floor(t*24.);
         float raw = hash(vec2(floor(vUv.x*220.), floor(vUv.y*160.) + frame));
+        // контраст вокруг 0.5, не сдвиг — noiseBoost>1 разводит тёмное/светлое
+        // дальше друг от друга (более "шумная" картинка), noiseBoost<1 сводит
+        // к серому, 1.0 (audio выключен) — тождество, raw не меняется.
+        raw = clamp((raw-0.5)*noiseBoost+0.5, 0.0, 1.0);
         float n = smoothstep(0.35, 0.75, raw);
         float scan = 0.85 + 0.15*sin(vUv.y*400. + t*6.);
         float roll = smoothstep(0.0, 0.08, fract(vUv.y - t*rollSpeed));
@@ -129,6 +140,9 @@ export function create(ctx){
     // ветки "временно включить прозрачность", как у кожи, просто множитель
     // на итоговую альфу.
     setOpacity(v){ material.uniforms.opacity.value = v; },
+
+    // фаза 7: верхняя полоса — интенсивность (контраст) ТВ-шума в дырке рта.
+    setAudioHigh(v){ material.uniforms.noiseBoost.value = 1 + v*NOISE_BOOST_K; },
 
     dispose(){ geometry.dispose(); material.dispose(); scene.remove(mesh); }
   };

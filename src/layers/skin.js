@@ -23,6 +23,15 @@ const BLEND_MODES = ['over','multiply','screen','mask','outline'];
 // записи в uniform, поэтому один общий объект безопасен.
 const NEUTRAL_ZONE_COLOR = new THREE.Color(1,1,1);
 
+// ─── фаза 7: реакция на звук (см. setAudioReactivity) ──────────────────
+// mid=1 (макс. после клампа в audio.js) -> скорость анимации паттернов
+// утраивается; high=1 -> интенсивность контурных линий растёт в 2.5 раза.
+// Оба коэффициента — множители к уже существующим t*spd/orn*0.7 членам
+// шейдера, а не отдельная система — при audio выключенном (mid=high=0)
+// визуально ничего не меняется (audioSpeedMul=1, contourBoost=1).
+const AUDIO_SKIN_SPEED_K = 2.0;
+const AUDIO_SKIN_CONTOUR_K = 1.5;
+
 function buildTriangles(){
   const t = FaceLandmarker.FACE_LANDMARKS_TESSELATION;
   const idx = [];
@@ -103,7 +112,9 @@ export function create(ctx){
     // и пишет глубину, без отдельной ветки на порог непрозрачности.
     transparent:false, side:THREE.DoubleSide, depthWrite:true,
     extensions:{ derivatives:true }, // fwidth() — используется паттернами (АА краёв) и режимом outline
-    uniforms:{ t:{value:0}, opacity:{value:1}, cA:{value:new THREE.Color()}, cB:{value:new THREE.Color()},
+    uniforms:{ t:{value:0}, opacity:{value:1},
+               audioSpeedMul:{value:1}, contourBoost:{value:1}, beatFlash:{value:0},
+               cA:{value:new THREE.Color()}, cB:{value:new THREE.Color()},
                cC:{value:new THREE.Color()}, freq:{value:12}, warp:{value:1},
                bands:{value:0}, spd:{value:.3},
                layerId:{value:[0,0,0,0]},
@@ -126,6 +137,7 @@ export function create(ctx){
         gl_Position=projectionMatrix*modelViewMatrix*vec4(position,1.); }`,
     fragmentShader:`precision highp float;
       uniform float t,freq,warp,bands,spd,opacity; uniform vec3 cA,cB,cC;
+      uniform float audioSpeedMul, contourBoost, beatFlash;
       uniform int layerId[4]; uniform vec4 layerParams[4];
       uniform vec3 layerColor[4]; uniform int layerBlend[4]; uniform float layerAngle[4];
       uniform int scheme, bandCount;
@@ -148,11 +160,16 @@ export function create(ctx){
 
       void main(){
         vec2 p=vU*freq;
-        float w=n(p*.5+t*spd)*warp;
-        float v=sin(p.x+p.y*.6+w*3.0+t*spd*2.0)*.5+.5;
+        // фаза 7: middle-полоса ускоряет анимацию паттернов — множитель на
+        // spd везде, где spd управляет скоростью, а не на t напрямую (t —
+        // общие часы маски, трогать их означало бы рассинхронизировать
+        // кожу с рэту/осколками).
+        float aspd = spd*audioSpeedMul;
+        float w=n(p*.5+t*aspd)*warp;
+        float v=sin(p.x+p.y*.6+w*3.0+t*aspd*2.0)*.5+.5;
         if(bands>.5) v=step(.5,v)*.85+v*.15;
         vec3 c=mix(cA,cB,v);
-        c=mix(c,cC,smoothstep(.3,.9,n(p*.3-t*spd*.5)));
+        c=mix(c,cC,smoothstep(.3,.9,n(p*.3-t*aspd*.5)));
 
         // Стек паттернов поверх базового градиента. mask/outline читают m
         // ПРЕДЫДУЩЕГО слоя (prevM) — «нижний прошёл порог» / «края нижнего»,
@@ -230,7 +247,7 @@ export function create(ctx){
         // посчитанного паттерна региона вместо отдельного набора uniform под
         // "орнамент"), поверх заливки, цветом контура.
         float orn = smoothstep(0.0, 0.35, fwidth(zm)*3.0);
-        c = mix(c, contourColor, orn*0.7);
+        c = mix(c, contourColor, min(1.0, orn*0.7*contourBoost));
 
         // 3d: обводка анатомических границ зон. margin непрерывна (в
         // отличие от zoneId — целочисленного, у него fwidth ненулевой
@@ -239,7 +256,13 @@ export function create(ctx){
         // толщину линии — стандартный приём для hairline-контуров.
         float zEdgePx = fwidth(zMargin) * 2.5;
         float zEdge = 1.0 - smoothstep(0.0, max(zEdgePx,1e-5), zMargin);
-        c = mix(c, contourColor, zEdge);
+        c = mix(c, contourColor, min(1.0, zEdge*contourBoost));
+
+        // фаза 7: кратковременная (100мс, см. main.js beatFlashUntil)
+        // инверсия всей заливки на удар низких частот — универсальная
+        // альтернатива повороту hue матрицей (не завязана на конкретную
+        // схему зон вроде checker) и не требует HSL-конверсии в шейдере.
+        c = mix(c, vec3(1.0)-c, beatFlash);
 
         gl_FragColor=vec4(c,opacity);
       }`
@@ -550,6 +573,16 @@ export function create(ctx){
       const fading = v < 1;
       material.transparent = fading;
       material.depthWrite = !fading;
+    },
+
+    // фаза 7: mid ускоряет анимацию паттернов, high усиливает контурные
+    // линии, beatFlash (0..1) — окно кратковременной инверсии на удар
+    // низких (main.js держит его открытым 100мс и сам считает затухание).
+    // Все три — независимые визуальные каналы полос, без общего состояния.
+    setAudioReactivity({ mid = 0, high = 0, beatFlash = 0 } = {}){
+      material.uniforms.audioSpeedMul.value = 1 + mid*AUDIO_SKIN_SPEED_K;
+      material.uniforms.contourBoost.value = 1 + high*AUDIO_SKIN_CONTOUR_K;
+      material.uniforms.beatFlash.value = beatFlash;
     },
 
     dispose(){ geometry.dispose(); material.dispose(); scene.remove(mesh); }

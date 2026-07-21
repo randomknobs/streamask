@@ -11,6 +11,7 @@ import * as crownLayer from './layers/crown.js';
 import { setupUI } from './ui.js';
 import * as storage from './storage.js';
 import { createRecorder, dataUrlToBlobSync, extensionForMime } from './record.js';
+import { createAudioAnalyzer } from './audio.js';
 
 // ─── удержание маски при потере трекинга лица (см. loop()) ────────────────
 // Поворот головы, рука перед камерой, резкое движение — detectForVideo
@@ -21,6 +22,13 @@ import { createRecorder, dataUrlToBlobSync, extensionForMime } from './record.js
 // сторону, от той точки, на которой остановилось затухание.
 const FACE_HOLD_MS = 8000;
 const FACE_FADE_MS = 400;
+
+// ─── фаза 7: реакция на звук (см. audio.js, loop()) ────────────────────────
+// Окно кратковременной инверсии кожи на удар низких (см. skin.js
+// setAudioReactivity/beatFlash) — main.js держит его открытым эти
+// миллисекунды после каждого зафиксированного удара, дальше beatFlash сам
+// падает в 0.
+const BEAT_FLASH_MS = 100;
 
 const $ = id => document.getElementById(id);
 const video = $('cam'), canvas = $('gl'), statusEl = $('status'), errEl = $('err');
@@ -236,11 +244,15 @@ function downloadBlob(blob, filename){
 
 /* ─────────────────────── общий поток микрофона ───────────────────
    getUserMedia({audio}) запрашивается не более одного раза на выбранное
-   устройство и кэшируется здесь — и запись, и (позже) анализатор фазы 7
-   переиспользуют один и тот же MediaStream вместо двух независимых
-   разрешений/дорожек. */
+   устройство и кэшируется здесь — запись и анализатор фазы 7 переиспользуют
+   один и тот же MediaStream вместо двух независимых разрешений/дорожек.
+   micConsumers считает, кому он сейчас реально нужен ('record'/'audio') —
+   реальный поток останавливается только когда список опустел целиком, а не
+   при выключении ЛЮБОГО ОДНОГО потребителя: иначе выключение тумблера audio
+   во время идущей записи со звуком обрывало бы звук записи, и наоборот. */
 let micStream = null;
 let micStreamDeviceId = undefined;
+const micConsumers = new Set();
 
 async function ensureMicStream(deviceId){
   if (micStream && micStreamDeviceId === deviceId) return micStream;
@@ -256,6 +268,16 @@ function stopMicStream(){
   if (micStream) micStream.getTracks().forEach(t => t.stop());
   micStream = null;
   micStreamDeviceId = undefined;
+}
+
+async function acquireMicStream(consumer, deviceId){
+  micConsumers.add(consumer);
+  return ensureMicStream(deviceId);
+}
+
+function releaseMicStream(consumer){
+  micConsumers.delete(consumer);
+  if (micConsumers.size === 0) stopMicStream();
 }
 
 async function listMicDevices(){
@@ -274,20 +296,63 @@ async function listMicDevices(){
 
 $('micToggle').onchange = async () => {
   if ($('micToggle').checked){
-    try { await ensureMicStream($('micDevice').value || undefined); }
+    try { await acquireMicStream('record', $('micDevice').value || undefined); }
     catch(e){
       console.error(e);
       alert('Could not access the microphone: ' + e.message);
       $('micToggle').checked = false;
+      micConsumers.delete('record');
     }
   } else {
-    stopMicStream();
+    releaseMicStream('record');
   }
 };
+
+/* ───────────────────────── фаза 7: реакция на звук ─────────────────
+   AnalyserNode строится поверх того же общего потока (acquireMicStream) —
+   пока тумблер audio выключен, analyzer.connect() ни разу не вызывается и
+   getUserMedia не запрашивается вовсе (см. audioToggle.onchange ниже). */
+const audioAnalyzer = createAudioAnalyzer();
+let audioSensitivity = 1;
+let audioState = { low:0, mid:0, high:0, level:0, beat:false };
+let beatFlashUntil = 0;
+
+// тумблер-кнопка, как и остальные слои (skin/shards/...) — не отдельный
+// чекбокс с зеркалящим состояние button.onclick, состояние живёт только в
+// классе 'on' самой кнопки.
+$('audio').onclick = async () => {
+  const turningOn = !$('audio').classList.contains('on');
+  if (turningOn){
+    try {
+      const stream = await acquireMicStream('audio', $('micDevice').value || undefined);
+      audioAnalyzer.connect(stream);
+      $('audio').classList.add('on');
+    } catch(e){
+      console.error(e);
+      alert('Could not access the microphone: ' + e.message);
+      releaseMicStream('audio');
+    }
+  } else {
+    audioAnalyzer.disconnect();
+    releaseMicStream('audio');
+    $('audio').classList.remove('on');
+    $('audioMeterFill').style.width = '0%';
+  }
+};
+$('audioSensitivity').oninput = e => { audioSensitivity = +e.target.value; };
+
 $('micDevice').onchange = async () => {
-  if (!$('micToggle').checked) return;
-  try { await ensureMicStream($('micDevice').value || undefined); }
-  catch(e){ console.error(e); alert('Could not access the microphone: ' + e.message); }
+  const deviceId = $('micDevice').value || undefined;
+  if ($('micToggle').checked){
+    try { await ensureMicStream(deviceId); }
+    catch(e){ console.error(e); alert('Could not access the microphone: ' + e.message); }
+  }
+  if ($('audio').classList.contains('on')){
+    try {
+      const stream = await ensureMicStream(deviceId);
+      audioAnalyzer.connect(stream);
+    } catch(e){ console.error(e); alert('Could not access the microphone: ' + e.message); }
+  }
 };
 
 async function toggleRecording(){
@@ -595,11 +660,24 @@ function loop(){
   }
   if (faceEverSeen) setLayersOpacity(maskOpacity);
 
+  // фаза 7: звук — вне блока frozen, та же категория, что реакция на мимику/
+  // блинки (живой внешний вход), не генеративная анимация. Пока тумблер
+  // audio выключен или анализатор ещё не подключён, audioState нулевой и
+  // все реактивные множители ниже становятся no-op (audioSpeedMul=1 и т.д.).
+  audioState = audioAnalyzer.connected
+    ? audioAnalyzer.update(audioSensitivity, now)
+    : { low:0, mid:0, high:0, level:0, beat:false };
+  if (audioState.beat) beatFlashUntil = now + BEAT_FLASH_MS;
+  const beatFlash = now < beatFlashUntil ? 1 : 0;
+  if (skin) skin.setAudioReactivity({ mid: audioState.mid, high: audioState.high, beatFlash });
+  if (mouth) mouth.setAudioHigh(audioState.high);
+  $('audioMeterFill').style.width = (audioState.level*100).toFixed(1) + '%';
+
   if (!frozen){
     const t = (now - t0)/1000;
     skin.setTime(t);
     if(mouth) mouth.setFrame(t, jawOpen);
-    if(shards) shards.update({ t, mouthEnergy: mouthEnergy * mouthReactionMul });
+    if(shards) shards.update({ t, mouthEnergy: mouthEnergy * mouthReactionMul, audioLow: audioState.low });
   }
 
   renderer.render(scene, camera);

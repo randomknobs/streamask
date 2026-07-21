@@ -2,6 +2,12 @@ import * as THREE from 'three';
 import { R, RI, pick } from '../rng.js';
 import { fadeGroupMaterials } from './fade.js';
 
+// фаза 7: реакция на нижнюю полосу анализатора (см. update() ниже) —
+// audioLow=1 (макс. после клампа в audio.js) даёт +80% к масштабу и толчок
+// наружу на 0.6 своей единицы длины.
+const AUDIO_SCALE_K = .8;
+const AUDIO_PUSH_K = .6;
+
 const GEOMS = [
   ()=> new THREE.IcosahedronGeometry(1, RI(2)),
   ()=> new THREE.TetrahedronGeometry(1, RI(2)),
@@ -242,9 +248,15 @@ export function create(ctx){
   return {
     object3D: group,
 
+    // фаза 7: audioLow (0..1, нижняя полоса анализатора, см. audio.js) —
+    // масштаб осколков и толчок наружу по тому же радиальному направлению
+    // (dirX/dirY), что уже используют core-осколки от mouthEnergy, но не
+    // ограничено поясом core — на удар низких реагирует весь пояс целиком.
+    // При audio выключенном audioLow всегда 0, ветки — no-op.
     update(state){
       const t = state.t;
       const mouthEnergy = state.mouthEnergy || 0;
+      const audioLow = state.audioLow || 0;
       const spinMul = 1 + mouthEnergy*5;
       const touched = new Set();
       for (const a of anim){
@@ -262,12 +274,20 @@ export function create(ctx){
           const k = 1 + Math.sin(t*a.pulse + a.ph)*.18;
           sx *= k; sy *= k; sz *= k;
         }
+        if (audioLow){
+          const ak = 1 + audioLow*AUDIO_SCALE_K;
+          sx *= ak; sy *= ak; sz *= ak;
+        }
         scaleV.set(sx, sy, sz);
 
         posV.copy(a.pos);
         if (a.belt === 'core' && mouthEnergy){
           posV.x += a.dirX * mouthEnergy * .4;
           posV.y += a.dirY * mouthEnergy * .4;
+        }
+        if (audioLow){
+          posV.x += a.dirX * audioLow * AUDIO_PUSH_K;
+          posV.y += a.dirY * audioLow * AUDIO_PUSH_K;
         }
 
         m.compose(posV, q, scaleV);
