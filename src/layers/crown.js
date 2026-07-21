@@ -1,6 +1,7 @@
 import * as THREE from 'three';
 import { R, RI, pick } from '../rng.js';
 import { GLSL_SOURCE, pickPattern, pickContrastingPair } from '../texture/patterns.js';
+import { fadeGroupMaterials } from './fade.js';
 
 // Крепление — приближённая позиция над лендмарком 10 (лоб) в anchor-local
 // координатах (начало координат анкера — кончик носа, см. tracking.js).
@@ -384,16 +385,18 @@ function makeCapMaterial(patternInfo, bg, fg){
       fgColor: { value: fg.clone() },
       patternId: { value: patternInfo.id },
       patternParams: { value: new THREE.Vector4(...patternInfo.params) },
+      opacity: { value: 1 },
     },
     vertexShader: `varying vec2 vUv;
       void main(){ vUv = uv; gl_Position = projectionMatrix*modelViewMatrix*vec4(position,1.0); }`,
     fragmentShader: `precision highp float;
       uniform vec3 bgColor, fgColor; uniform int patternId; uniform vec4 patternParams;
+      uniform float opacity;
       varying vec2 vUv;
       ${GLSL_SOURCE}
       void main(){
         float m = patternById(patternId, vUv, patternParams);
-        gl_FragColor = vec4(mix(bgColor, fgColor, m), 1.0);
+        gl_FragColor = vec4(mix(bgColor, fgColor, m), opacity);
       }`,
     extensions: { derivatives: true }
   });
@@ -556,6 +559,7 @@ export function create(ctx){
     capRadius: cap.radius,
     capPattern: cap.patternName,
     capContrastRetried: cap.contrastRetried,
+    setOpacity(v){ fadeGroupMaterials(group, v); },
     dispose(){ group.traverse(o=>{ o.geometry?.dispose(); o.material?.dispose?.(); }); }
   };
 }

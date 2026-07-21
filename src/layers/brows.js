@@ -1,6 +1,7 @@
 import * as THREE from 'three';
 import { R, RI, pick } from '../rng.js';
 import { toWorld } from '../tracking.js';
+import { fadeGroupMaterials } from './fade.js';
 
 // Верхняя точка кольца глаза (см. eyes.js: RING_RIGHT/RING_LEFT) — от неё
 // считается посадка брови, а не от константы. Так брови не наезжают на
@@ -257,6 +258,8 @@ export function create(ctx){
       rightMesh.rotation.z = avg * maxTilt;
       if (!isUnibrow) leftMesh.rotation.z = -avg * maxTilt;
     },
+
+    setOpacity(v){ fadeGroupMaterials(group, v); },
 
     dispose(){
       group.traverse(o=>{ o.geometry?.dispose(); o.material?.dispose?.(); });

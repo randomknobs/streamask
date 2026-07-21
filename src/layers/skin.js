@@ -103,7 +103,7 @@ export function create(ctx){
     // и пишет глубину, без отдельной ветки на порог непрозрачности.
     transparent:false, side:THREE.DoubleSide, depthWrite:true,
     extensions:{ derivatives:true }, // fwidth() — используется паттернами (АА краёв) и режимом outline
-    uniforms:{ t:{value:0}, cA:{value:new THREE.Color()}, cB:{value:new THREE.Color()},
+    uniforms:{ t:{value:0}, opacity:{value:1}, cA:{value:new THREE.Color()}, cB:{value:new THREE.Color()},
                cC:{value:new THREE.Color()}, freq:{value:12}, warp:{value:1},
                bands:{value:0}, spd:{value:.3},
                layerId:{value:[0,0,0,0]},
@@ -125,7 +125,7 @@ export function create(ctx){
       void main(){ vU=uv; vP=position;
         gl_Position=projectionMatrix*modelViewMatrix*vec4(position,1.); }`,
     fragmentShader:`precision highp float;
-      uniform float t,freq,warp,bands,spd; uniform vec3 cA,cB,cC;
+      uniform float t,freq,warp,bands,spd,opacity; uniform vec3 cA,cB,cC;
       uniform int layerId[4]; uniform vec4 layerParams[4];
       uniform vec3 layerColor[4]; uniform int layerBlend[4]; uniform float layerAngle[4];
       uniform int scheme, bandCount;
@@ -241,7 +241,7 @@ export function create(ctx){
         float zEdge = 1.0 - smoothstep(0.0, max(zEdgePx,1e-5), zMargin);
         c = mix(c, contourColor, zEdge);
 
-        gl_FragColor=vec4(c,1.0);
+        gl_FragColor=vec4(c,opacity);
       }`
   });
 
@@ -539,6 +539,18 @@ export function create(ctx){
     },
 
     setTime(t){ material.uniforms.t.value = t; },
+
+    // кожа всегда transparent:false/depthWrite:true (см. создание материала
+    // выше) — честно перекрывает и пишет глубину, пока полностью видна.
+    // Единственное исключение — окно затухания при потере трекинга лица
+    // (main.js): на время v<1 временно включаем transparent и выключаем
+    // depthWrite, а по возврату к v===1 возвращаем оба флага как есть.
+    setOpacity(v){
+      material.uniforms.opacity.value = v;
+      const fading = v < 1;
+      material.transparent = fading;
+      material.depthWrite = !fading;
+    },
 
     dispose(){ geometry.dispose(); material.dispose(); scene.remove(mesh); }
   };

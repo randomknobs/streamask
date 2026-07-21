@@ -1,5 +1,6 @@
 import * as THREE from 'three';
 import { R, RI, pick } from '../rng.js';
+import { fadeGroupMaterials } from './fade.js';
 
 const GEOMS = [
   ()=> new THREE.IcosahedronGeometry(1, RI(2)),
@@ -275,6 +276,8 @@ export function create(ctx){
       }
       touched.forEach(im => { im.instanceMatrix.needsUpdate = true; });
     },
+
+    setOpacity(v){ fadeGroupMaterials(group, v); },
 
     dispose(){
       group.traverse(o=>{ o.geometry?.dispose(); o.material?.dispose?.(); });

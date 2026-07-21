@@ -1,6 +1,7 @@
 import * as THREE from 'three';
 import { createRng } from '../rng.js';
 import { toWorld } from '../tracking.js';
+import { fadeGroupMaterials } from './fade.js';
 
 const RING_RIGHT = [33,7,163,144,145,153,154,155,133,173,157,158,159,160,161,246];
 const RING_LEFT  = [263,249,390,373,374,380,381,382,362,398,384,385,386,387,388,466];
@@ -155,6 +156,8 @@ export function create(ctx){
       updateOneEye(rightEye, RING_RIGHT, IRIS_RIGHT, landmarks, aspect, _invAnchor, blinkRight, jawOpenVal);
       updateOneEye(leftEye, RING_LEFT, IRIS_LEFT, landmarks, aspect, _invAnchor, blinkLeft, jawOpenVal);
     },
+
+    setOpacity(v){ fadeGroupMaterials(group, v); },
 
     dispose(){
       group.traverse(o=>{ o.geometry?.dispose(); o.material?.dispose?.(); });

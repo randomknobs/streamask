@@ -12,6 +12,16 @@ import { setupUI } from './ui.js';
 import * as storage from './storage.js';
 import { createRecorder, dataUrlToBlobSync, extensionForMime } from './record.js';
 
+// ─── удержание маски при потере трекинга лица (см. loop()) ────────────────
+// Поворот головы, рука перед камерой, резкое движение — detectForVideo
+// какое-то время не возвращает лицо. Вместо немедленного скрытия слоёв держим
+// маску на последних валидных лендмарках FACE_HOLD_MS, и только если лицо не
+// вернулось за это время — плавно гасим все слои по opacity за FACE_FADE_MS
+// (не мгновенно). Обратное появление лица гасится тем же таймингом в другую
+// сторону, от той точки, на которой остановилось затухание.
+const FACE_HOLD_MS = 1500;
+const FACE_FADE_MS = 400;
+
 const $ = id => document.getElementById(id);
 const video = $('cam'), canvas = $('gl'), statusEl = $('status'), errEl = $('err');
 
@@ -481,6 +491,25 @@ let frozen = false, freezeT = 0;
 /* ────────────────────────── loop ──────────────────────────────── */
 let lastTs = -1, t0 = performance.now(), frames = 0, fps = 0, fpsT = performance.now();
 let mouthEnergy = 0, jawOpen = 0;
+
+// удержание/затухание при потере лица (см. константы FACE_HOLD_MS/
+// FACE_FADE_MS вверху файла) — faceEverSeen отдельно от этого: до первого
+// найденного лица маску всё ещё показывать нечего (лендмарки ни разу не
+// приходили, буферы геометрии в дефолтном состоянии).
+let faceEverSeen = false;
+let faceLostAt = null;         // performance.now() момента потери, null пока лицо трекается
+let fadeInStart = null, fadeInFrom = 1; // плавный возврат из состояния затухания
+let maskOpacity = 1;
+
+function setLayersOpacity(v){
+  if (skin) skin.setOpacity(v);
+  if (mouth) mouth.setOpacity(v);
+  if (shards) shards.setOpacity(v);
+  if (eyes) eyes.setOpacity(v);
+  if (brows) brows.setOpacity(v);
+  if (crown) crown.setOpacity(v);
+}
+
 function loop(){
   requestAnimationFrame(loop);
   if(!landmarker || video.readyState < 2) return;
@@ -489,7 +518,20 @@ function loop(){
   if(video.currentTime !== lastTs){
     lastTs = video.currentTime;
     const res = landmarker.detectForVideo(video, now);
-    if(res.faceLandmarks && res.faceLandmarks.length){
+    const faceFound = !!(res.faceLandmarks && res.faceLandmarks.length);
+
+    if (faceFound){
+      if (faceLostAt !== null){
+        // лицо вернулось — сброс сглаживания лендмарков (маска садится на
+        // место сразу, без "подползания" за несколько кадров) и плавный
+        // fade-in С ТОЙ ТОЧКИ, на которой остановилось затухание, а не с 0.
+        lmSmoother.reset();
+        fadeInStart = now;
+        fadeInFrom = maskOpacity;
+        faceLostAt = null;
+      }
+      faceEverSeen = true;
+
       // сглаживаем лендмарки ОДИН раз здесь — все слои ниже (анкер, кожа,
       // рот, глаза, брови) читают этот же массив, лаг между слоями из-за
       // разных источников/степеней сглаживания физически невозможен. Сила
@@ -503,15 +545,6 @@ function loop(){
       anchor.updateMatrixWorld(true);
       if(showSkin) skin.updateGeometry(lms, aspect);
       if(mouth) mouth.updateGeometry(lms, aspect);
-      // anchor всегда виден, пока лицо трекается — каждый слой управляет
-      // своей видимостью независимым тумблером.
-      anchor.visible = true;
-      if(skin) skin.object3D.visible = showSkin;
-      if(mouth) mouth.object3D.visible = showMouth;
-      if(shards) shards.object3D.visible = showShards;
-      if(crown) crown.object3D.visible = showCrown;
-      if(eyes) eyes.object3D.visible = showEyes;
-      if(brows) brows.object3D.visible = showBrows;
 
       const bs = blend.update(res.faceBlendshapes?.[0]?.categories);
       jawOpen = bs.jawOpen || 0;
@@ -526,12 +559,41 @@ function loop(){
         brows.updateGeometry(lms, aspect, anchor);
         brows.update(bs.browDownLeft||0, bs.browDownRight||0);
       }
-    } else {
-      anchor.visible = false;
-      if(skin) skin.object3D.visible = false;
-      if(mouth) mouth.object3D.visible = false;
+    } else if (faceEverSeen && faceLostAt === null){
+      // лицо потеряно — НЕ трогаем геометрию/анкер: раз updateGeometry не
+      // вызывается, все позиции остаются на последних валидных значениях
+      // сами по себе. Только отмечаем момент потери для таймаута ниже.
+      faceLostAt = now;
     }
   }
+
+  // видимость слоёв — от пользовательских тумблеров и того, было ли лицо
+  // хоть раз найдено; статус ТЕКУЩЕГО трекинга выражается через opacity
+  // ниже, а не через скрытие, поэтому эти строки больше не внутри блока
+  // "лицо найдено в этом кадре" и выполняются каждый кадр безусловно.
+  anchor.visible = faceEverSeen;
+  if(skin) skin.object3D.visible = showSkin;
+  if(mouth) mouth.object3D.visible = showMouth;
+  if(shards) shards.object3D.visible = showShards;
+  if(crown) crown.object3D.visible = showCrown;
+  if(eyes) eyes.object3D.visible = showEyes;
+  if(brows) brows.object3D.visible = showBrows;
+
+  // opacity считается от wall-clock (now), не от кадров видео — иначе
+  // затухание/проявление шло бы рывками по частоте камеры (~30) вместо
+  // плавных FACE_FADE_MS=400 по герцовке экрана.
+  if (faceLostAt !== null){
+    const missingFor = now - faceLostAt;
+    maskOpacity = missingFor <= FACE_HOLD_MS ? 1
+      : 1 - Math.min(1, (missingFor - FACE_HOLD_MS) / FACE_FADE_MS);
+  } else if (fadeInStart !== null){
+    const t = Math.min(1, (now - fadeInStart) / FACE_FADE_MS);
+    maskOpacity = THREE.MathUtils.lerp(fadeInFrom, 1, t);
+    if (t >= 1) fadeInStart = null;
+  } else {
+    maskOpacity = 1;
+  }
+  if (faceEverSeen) setLayersOpacity(maskOpacity);
 
   if (!frozen){
     const t = (now - t0)/1000;

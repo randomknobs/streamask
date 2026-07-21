@@ -26,12 +26,12 @@ export function create(ctx){
 
   const material = new THREE.ShaderMaterial({
     transparent:true, depthWrite:false, side:THREE.DoubleSide,
-    uniforms:{ t:{value:0}, jawOpen:{value:0},
+    uniforms:{ t:{value:0}, jawOpen:{value:0}, opacity:{value:1},
                tint:{value:new THREE.Color(1,1,1)}, rollSpeed:{value:.6} },
     vertexShader:`varying vec2 vUv;
       void main(){ vUv=uv; gl_Position=projectionMatrix*modelViewMatrix*vec4(position,1.); }`,
     fragmentShader:`precision highp float;
-      uniform float t, jawOpen, rollSpeed; uniform vec3 tint;
+      uniform float t, jawOpen, rollSpeed, opacity; uniform vec3 tint;
       varying vec2 vUv;
       float hash(vec2 p){ return fract(sin(dot(p, vec2(41.3,289.1)))*43758.5453); }
       void main(){
@@ -45,7 +45,7 @@ export function create(ctx){
         c = min(c*1.4, vec3(1.0));
         float flash = hash(vec2(frame, 7.0));
         if (flash > 0.97) c = vec3(1.0);
-        float alpha = smoothstep(0.02, 0.20, jawOpen);
+        float alpha = smoothstep(0.02, 0.20, jawOpen) * opacity;
         gl_FragColor = vec4(c, alpha);
       }`
   });
@@ -124,6 +124,11 @@ export function create(ctx){
       material.uniforms.t.value = t;
       material.uniforms.jawOpen.value = jawOpen;
     },
+
+    // материал и так всегда transparent:true/depthWrite:false — здесь нет
+    // ветки "временно включить прозрачность", как у кожи, просто множитель
+    // на итоговую альфу.
+    setOpacity(v){ material.uniforms.opacity.value = v; },
 
     dispose(){ geometry.dispose(); material.dispose(); scene.remove(mesh); }
   };
