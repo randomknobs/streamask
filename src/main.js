@@ -636,3 +636,21 @@ $('allow').onclick = () => start();
     if(p.state === 'granted') start();
   } catch(e){ /* Firefox/Safari не умеют — ждём кнопку */ }
 })();
+
+// та же история с микрофоном: enumerateDevices() отдаёт настоящие label
+// только после того, как в ЭТОЙ сессии страницы уже был активный поток
+// нужного kind — persisted-разрешение само по себе не всегда достаточно
+// (особенно в Firefox). Если разрешение уже выдано — открываем короткий
+// пробный поток только чтобы разблокировать label и сразу его глушим:
+// это НЕ тот же кэшированный поток, что ensureMicStream() держит для
+// записи/анализатора, чекбокс mic остаётся выключенным, ничего не пишется.
+(async () => {
+  try {
+    const p = await navigator.permissions.query({ name:'microphone' });
+    if (p.state === 'granted'){
+      const probe = await navigator.mediaDevices.getUserMedia({ audio:true });
+      probe.getTracks().forEach(t => t.stop());
+      await listMicDevices();
+    }
+  } catch(e){ /* Firefox/Safari не умеют permissions.query('microphone') — ждём чекбокс */ }
+})();
