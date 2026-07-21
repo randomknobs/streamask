@@ -27,8 +27,20 @@ export function fadeGroupMaterials(root, v){
       } else {
         m.opacity = m.userData.baseOpacity * v;
       }
-      m.transparent = fading || m.userData.baseTransparent;
-      m.depthWrite = fading ? false : m.userData.baseDepthWrite;
+      // WebGLRenderer игнорирует opacity целиком, если transparent!==true —
+      // материал рисуется как полностью непрозрачный вне зависимости от
+      // значения opacity/uniform opacity. Поэтому на время затухания
+      // transparent включается БЕЗУСЛОВНО для абсолютно всех материалов —
+      // в т.ч. wireframe MeshBasicMaterial у core/mid осколков и рёбер
+      // короны, у которых в покое transparent:false — а не только для тех,
+      // кто и так уже был полупрозрачным (halo-элементы).
+      if (fading){
+        m.transparent = true;
+        m.depthWrite = false;
+      } else {
+        m.transparent = m.userData.baseTransparent;
+        m.depthWrite = m.userData.baseDepthWrite;
+      }
     }
   });
 }

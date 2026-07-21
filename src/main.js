@@ -19,7 +19,7 @@ import { createRecorder, dataUrlToBlobSync, extensionForMime } from './record.js
 // вернулось за это время — плавно гасим все слои по opacity за FACE_FADE_MS
 // (не мгновенно). Обратное появление лица гасится тем же таймингом в другую
 // сторону, от той точки, на которой остановилось затухание.
-const FACE_HOLD_MS = 1500;
+const FACE_HOLD_MS = 8000;
 const FACE_FADE_MS = 400;
 
 const $ = id => document.getElementById(id);
