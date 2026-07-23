@@ -35,7 +35,8 @@
   #gatebox p { margin:0; color:var(--dim); font-size:12px; line-height:1.6; }
   #allow { padding:12px 22px; font-size:14px; border-color:var(--acc); color:var(--acc); }
   select { background:#181a21; color:var(--fg); border:1px solid #2c2f3a; border-radius:4px;
-           padding:6px 8px; font:inherit; max-width:100%; }
+           padding:6px 8px; font:inherit; width:100%; max-width:100%; box-sizing:border-box;
+           overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
   #status { position:fixed; bottom:12px; left:14px; color:var(--dim); font-size:11px; z-index:10; }
   #err { position:fixed; inset:auto 14px 14px 14px; color:#ff8080; font-size:12px; z-index:20; }
   #galleryModal { position:fixed; inset:0; z-index:40; display:flex; align-items:center; justify-content:center; }
